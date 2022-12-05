@@ -1,5 +1,5 @@
 [[jcohy-study-note]]
-= Jcohy 学习笔记
+= 其他组件
 Jcohy
 
 ****
@@ -13,4 +13,10 @@ https://docs.jcohy.com[*https://docs.jcohy.com*]
 ****
 
 
-include::legal.adoc[leveloffset=+1]
+include::quartz.adoc[leveloffset=+1]
+
+include::swagger.adoc[leveloffset=+1]
+
+include::jenkins.adoc[leveloffset=+1]
+
+include::zookeeper.adoc[leveloffset=+1]

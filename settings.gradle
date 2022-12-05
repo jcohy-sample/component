@@ -1,4 +1,4 @@
-rootProject.name = 'template-sample'
+rootProject.name = 'component-sample'
 
 include "bom"
 
