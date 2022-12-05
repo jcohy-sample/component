@@ -20,3 +20,5 @@ https://www.jcohy.com[*https://www.jcohy.com/projects*]
 <<swagger#swagger,Swagger>> :: Swagger.
 
 <<zookeeper#zookeeper,Zookeeper>> :: Zookeeper.
+
+<<nginx#nginx-conf,Nginx 配置详解>> :: Nginx 配置详解.
