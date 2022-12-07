@@ -22,3 +22,5 @@ include::jenkins.adoc[leveloffset=+1]
 include::zookeeper.adoc[leveloffset=+1]
 
 include::nginx.adoc[leveloffset=+1]
+
+include::file.adoc[leveloffset=+1]

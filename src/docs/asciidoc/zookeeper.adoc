@@ -4,11 +4,11 @@
 [[zookeeper-overview]]
 == 概述
 
-Zookeeper是一个分布式协调服务; 就是为用户的分布式应用程序提供协调服务
+Zookeeper 是一个分布式协调服务; 就是为用户的分布式应用程序提供协调服务
 
 
 *  zookeeper 是为别的分布式程序服务的
-*  Zookeeper 本身就是一个分布式程序(只要有半数以上节点存活,zk就能正常服务)
+*  Zookeeper 本身就是一个分布式程序(只要有半数以上节点存活,zk 就能正常服务)
 *  Zookeeper 所提供的服务涵盖: 主从协调、服务器节点动态上下线、统一配置管理、分布式共享锁、统一名称服务……
 *  虽然说可以提供各种服务,但是 zookeeper 在底层其实只提供了两个功能: 管理(存储,读取)用户程序提交的数据;  并为用户程序提供数据节点监听服务;
 
@@ -27,25 +27,25 @@ Zookeeper 集群的角色:   Leader 和  follower  (Observer)
 
 === zookeeper特性
 
-1、Zookeeper: 一个leader,多个follower组成的集群
+1、Zookeeper: 一个 leader,多个 follower 组成的集群
 
-2、全局数据一致: 每个server保存一份相同的数据副本,client无论连接到哪个server,数据都是一致的
+2、全局数据一致: 每个 server 保存一份相同的数据副本,client 无论连接到哪个 server,数据都是一致的
 
-3、分布式读写,更新请求转发,由leader实施
+3、分布式读写,更新请求转发,由 leader 实施
 
-4、更新请求顺序进行,来自同一个client的更新请求按其发送顺序依次执行
+4、更新请求顺序进行,来自同一个 client 的更新请求按其发送顺序依次执行
 
 5、数据更新原子性,一次数据更新要么成功,要么失败
 
-6、实时性,在一定时间范围内,client能读到最新数据
+6、实时性,在一定时间范围内,client 能读到最新数据
 
 === zookeeper数据结构
 
 1、层次化的目录结构,命名符合常规文件系统规范(见下图)
 
-2、每个节点在zookeeper中叫做znode,并且其有一个唯一的路径标识
+2、每个节点在 zookeeper 中叫做 znode,并且其有一个唯一的路径标识
 
-3、节点Znode可以包含数据和子节点(但是EPHEMERAL类型的节点不能有子节点,下一页详细讲解)
+3、节点 Znode 可以包含数据和子节点(但是 EPHEMERAL 类型的节点不能有子节点,下一页详细讲解)
 
 4、客户端应用可以在节点上设置监视器(后续详细讲解)
 
@@ -60,20 +60,20 @@ https://github.com/jiachao23/StudyNote/blob/master/src/img/zks.png[zks]
     短暂(ephemeral)(断开连接自己删除)
     持久(persistent)(断开连接不删除)
 
-. Znode有四种形式的目录节点(默认是persistent)
+. Znode 有四种形式的目录节点(默认是 persistent)
 
     PERSISTENT
     PERSISTENT_SEQUENTIAL(持久序列/test0000000019)
     EPHEMERAL
     EPHEMERAL_SEQUENTIAL
 
-. 创建znode时设置顺序标识,znode名称后会附加一个值,顺序号是一个单调递增的计数器,由父节点维护
+. 创建 znode 时设置顺序标识,znode 名称后会附加一个值,顺序号是一个单调递增的计数器,由父节点维护
 . 在分布式系统中,顺序号可以被用于为所有的事件进行全局排序,这样客户端可以通过顺序号推断事件的顺序
 
 [[zookeeper-theory]]
 == zookeeper 原理
 
-** Zookeeper虽然在配置文件中并没有指定 master 和 slave 但是,zookeeper 工作时,是有一个节点为 `leader`,其他则为 `follower` Leader是通过内部的选举机制临时产生的**
+** Zookeeper 虽然在配置文件中并没有指定 master 和 slave 但是,zookeeper 工作时,是有一个节点为 `leader`,其他则为 `follower` Leader 是通过内部的选举机制临时产生的**
 
 [[zookeeper-theory-paxos]]
 === zookeeper 的选举机制(全新集群 paxos)
@@ -127,7 +127,7 @@ https://github.com/jiachao23/StudyNote/blob/master/src/img/zkc.png[zkc]
 [zk: 202.115.36.251:2181(CONNECTED) 1] ls /
 ----
 
-2、创建一个新的 znode ,使用 `create` /zk myData .这个命令创建了一个新的 znode 节点“ zk ”以及与它关联的字符串:
+2、创建一个新的 znode ,使用 `create` /zk myData .这个命令创建了一个新的 znode 节点 "zk" 以及与它关联的字符串:
 
 [source,shell]
 ----
@@ -262,7 +262,7 @@ public class SimpleDemo {
 
 https://github.com/jiachao23/StudyNote/blob/master/src/img/zkworg.png[zkworg]
 
-监听器是一个接口,我们的代码中可以实现Wather这个接口,实现其中的process方法,方法中即我们自己的业务逻辑
+监听器是一个接口,我们的代码中可以实现 Wather 这个接口,实现其中的 process 方法,方法中即我们自己的业务逻辑
 
 * 监听器的注册是在获取数据的操作中实现:
 ** `getData(path,watch?)` 监听的事件是: 节点数据变化事件

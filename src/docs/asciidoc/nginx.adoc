@@ -1,21 +1,23 @@
 [[nginx-conf]]
 = nginx.conf 文件结构
 
-* 1.nginx.conf文件一共由三部分组成,分别为全局块,events块,http块.http块中又包含http全局块,多个server块.server块中,又包含server全局块和多个location块.在同一配置块中嵌套的配置快,各个之间不存在次序关系.
-* 2.全局块是默认配置文件从开始到events块之间的一部分内容.主要设置一些影响nginx服务器整体运行的配置指令.全局生效.
-* 3.events块涉及的指令主要影响Nginx服务器与用户的网络连接.对服务器性能影响比较大.
-* 4.http块:代理,缓存和日志定义,第三方模块
-* 5.server块:和虚拟主机有密切联系,可以包含多了location块
-* 6.location块,location块其实是server块的一个指令.
+提供一个 nginx 在线配置的地址 https://www.nginxedit.cn/[https://www.nginxedit.cn/]
+
+. `nginx.conf` 文件一共由三部分组成,分别为全局块,`events` 块,`http` 块.`http` 块中又包含 `http` 全局块,多个 `server` 块.`server` 块中,又包含 `server` 全局块和多个 `location` 块.在同一配置块中嵌套的配置快,各个之间不存在次序关系.
+. 全局块是默认配置文件从开始到 `events` 块之间的一部分内容.主要设置一些影响 nginx 服务器整体运行的配置指令.全局生效.
+. `events` 块涉及的指令主要影响 Nginx 服务器与用户的网络连接.对服务器性能影响比较大.
+. `http` 块:代理,缓存和日志定义,第三方模块
+. `server` 块:和虚拟主机有密切联系,可以包含多了 `location` 块
+. `location` 块,`location` 块其实是 `server` 块的一个指令.
 
 [[nginx-overview-conf-global]]
 == 全局块
 
-* 配置运行nginx服务器的用户(组)
+* 配置运行 nginx 服务器的用户(组)
 
     语法:user  用户名;  (全局块)
 
-* 允许生成的 work process 数.worker_processes 是 Nginx 服务器实现并发处理服务的关键.
+* 允许生成的 work process 数.`worker_processes` 是 Nginx 服务器实现并发处理服务的关键.
 
     语法:worker_processes number|auto;    (全局块)
 
@@ -23,28 +25,28 @@
 
     语法:error_log  file|stderr [debug|info|notice|warn|error|crit|alert|emery];(全局块,http块,server块,location块)
 
-* nginx进程PID存放路径
+* nginx 进程 PID 存放路径
 
     语法:pid file; (全局块)
 
-* 完成其他nginx配置或者第三方模块的配置引入
+* 完成其他 nginx 配置或者第三方模块的配置引入
 
-     语法:include file;(任何地方)
+     语法:include file; (任何地方)
 
 [[nginx-overview-conf-events]]
 == events 块
 
 * 设置网络连接的序列化
 
-    语法:accept_mutex on|off;(events块)
+    语法:accept_mutex on|off;(events 块)
 
 * 设置是否允许同事接收多个网络连接
 
-    语法:multi_accept on|off;(events块)
+    语法:multi_accept on|off;(events 块)
 
 * 事件驱动模型的选择
 
-    语法:use [select|poll|kqueue|epoll|rtsig|/dev/poll|eventport];(events块)
+    语法:use [select|poll|kqueue|epoll|rtsig|/dev/poll|eventport];(events 块)
 
 * 设置最大连接数,不能大于操作系统支持打开的最大文件句柄数量
 
@@ -53,19 +55,19 @@
 [[nginx-overview-conf-http]]
 == http 全局块
 
-* 引入mime.types文件,里面定义了一个type结构,包含了浏览器能够识别的MIME类型及文件名后缀.
+* 引入 `mime.types` 文件,里面定义了一个 `type` 结构,包含了浏览器能够识别的MIME类型及文件名后缀.
 
-    语法:include       mime.types;
+    语法:include  mime.types;
 
-* 定义了处理前端请求的MIME类型.默认为text/plain.
+* 定义了处理前端请求的 MIME 类型.默认为 `text/plain`.
 
-    语法:default_type  application/octet-stream;(http块,server块,location块)
+    语法: default_type  application/octet-stream;(http 块,server 块,location 块)
 
-* 服务日志的配置,只能在http块配置
+* 服务日志的配置,只能在 http 块配置
 
-    语法:access_log path[format[buffer=size]]; (http块)
-    path:存放路径.format:可选项,自定义服务日志的格式字符串,联合log_format使用;
-    log_format配置:
+    语法:access_log path[format[buffer=size]]; (http 块)
+    path:存放路径.format:可选项,自定义服务日志的格式字符串,联合 log_format 使用;
+    log_format 配置:
     语法:log_format name string...;
             ## $remote_addr:用户机Ip
             ## $remote_user:用户名
@@ -77,23 +79,23 @@
             ## $http_user_agent:用户浏览器代理
             ## $http_x_forwarded_for:请求头
 
-* 配置允许sendfile方式传输文件
+* 配置允许 sendfile 方式传输文件
 
-    语法:sendfile on|off;(http块,server块,location块)
+    语法:sendfile on|off;(http 块,server 块,location 块)
 
 * 配置每次传输的数据量最大值
 
-    语法:sendfile_max_chunk size;(http块,server块,location块)
+    语法:sendfile_max_chunk size;(http 块,server 块,location 块)
 
 * 超时时间
 
-    语法:keepalive_timeout timeout[header_timeout];(http块,server块,location块)
+    语法:keepalive_timeout timeout[header_timeout];(http 块,server 块,location 块)
           header_timeout可选,在应答报文头部的Keep-Alive域设置超时时间.
-          keepalive_timeout  120s 100s;服务端保持120s,发给用户端的应答报文头部Keep-Alive域超时时间100s
+          keepalive_timeout  120s 100s;服务端保持 120s,发给用户端的应答报文头部 Keep-Alive 域超时时间100s
 
 * 配置单连接请求数上限
 
-    语法:keepalive_requests number;(http块,server块,location块)
+    语法:keepalive_requests number;(http 块,server 块,location 块)
 
 [[nginx-overview-conf-server]]
 == server 块
@@ -168,13 +170,13 @@
 
     语法:error_page code ... [=[response]] uri;
 
-* 基于IP配置nginx的访问权限
+* 基于 IP 配置 nginx 的访问权限
 
     这两个指令可以在http块,server块或者location块中使用
     语法:allow address | CIDR |all
     语法:deny address | CIDR | all
 
-* 基于密码配置nginx的访问权限
+* 基于密码配置 nginx 的访问权限
 
     语法:auth_basic string | off
     string:开启该认证功能,并配置验证时的指示信息

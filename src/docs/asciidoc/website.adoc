@@ -8,13 +8,13 @@
 
 https://www.hackerrank.com[HackerRank]
 
-目前有200多万的程序员在使用HackerRank,通过实战提高编程能力,里面还有各种挑战赛.
+目前有 200 多万的程序员在使用 HackerRank,通过实战提高编程能力,里面还有各种挑战赛.
  
 * Codecademy
 
 https://www.codecademy.com[Codecademy]
 
-使用Codecademy,你会发现编程是比较有趣的,在该网站上学习编程,通常是一个知识点搭配三个练习,可以让你对知识点掌握的更加牢固
+使用 Codecademy,你会发现编程是比较有趣的,在该网站上学习编程,通常是一个知识点搭配三个练习,可以让你对知识点掌握的更加牢固
 
 此外,它还提供了讨论的论坛,编程语言术语,博文等.
   
