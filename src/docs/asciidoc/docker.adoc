@@ -1,0 +1,199 @@
+[[docker]]
+= 打包成镜像
+
+== 前提
+
+1、<<sample-install-docker,安装 docker>>
+
+2、Spring Boot 版本大于 2.3.0
+
+3、<<sample-install-harbor,安装 docker 私服>>
+
+== 使用插件构建（Gradle）
+
+1、引入 `org.springframework.boot` 插件
+
+可以使用 bootBuildImage 任务来构建镜像.应用 Java 插件时,该任务会自动创建,并且是 BootBuildImage 的实例.`bootBuildImage` 任务不支持 打包成 war.
+
+[source,groovy]
+----
+plugins {
+	id 'org.springframework.boot' version '2.4.5'
+}
+
+apply plugin: 'org.springframework.boot'
+----
+
+2、在根项目下使用 `./gradlew bootBuildImage` 构建镜像。第一次构建比较慢
+
+3、运行镜像 `docker run -p 8080:8080 spring-cloud-sample:1.0.0`
+
+=== 使用插件构建（Maven）
+
+1、引入 `spring-boot-maven-plugin` 插件
+
+可以使用 build-image 目标来构建镜像. `build-image` 目标不支持打包成 war.
+
+最简单的入门方法是在项目上调用 `mvn spring-boot:build-image`. 每当调用 package 阶段时,都可以自动创建镜像,如以下示例所示:
+
+[source,xml]
+----
+<build>
+    <plugins>
+        <plugin>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-maven-plugin</artifactId>
+            <executions>
+                <execution>
+                    <goals>
+                        <goal>build-image</goal>
+                    </goals>
+                </execution>
+            </executions>
+        </plugin>
+    </plugins>
+</build>
+----
+
+2、在根项目下使用 `./gradlew bootBuildImage` 构建镜像。第一次构建比较慢
+
+3、运行镜像 `docker run -p 8080:8080 spring-cloud-sample:1.0.0`
+
+=== 自定义镜像
+
+可以使用 `bootBuildImage` 块进行自定义。详情请参考 https://docs.spring.io/spring-boot/docs/2.4.5/gradle-plugin/reference/htmlsingle/#build-image-example-docker[官方文档]
+
+以下为简单的示例：
+
+[source,groovy]
+.Gradle
+----
+bootBuildImage {
+    //  镜像名
+    imageName = "example.com/library/${project.name}"
+    // 配置镜像构建器
+    builder = "mine/java-cnb-builder"
+    runImage = "mine/java-cnb-run"
+    // 配置 docker 环境变量
+    environment = [
+            "HTTP_PROXY" : "http://proxy.example.com",
+            "HTTPS_PROXY": "https://proxy.example.com"
+    ]
+    // 配置 docker 私服
+    docker {
+        // docker 配置
+        host = "tcp://192.168.99.100:2376"
+        tlsVerify = true
+        certPath = "/home/users/.minikube/certs"
+        publishRegistry {
+            username = "user"
+            password = "secret"
+            url = "https://docker.example.com/v1/"
+            email = "user@example.com"
+        }
+    }
+}
+----
+
+[source,xml]
+.Maven
+----
+<project>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <image>
+                        //  镜像名
+                        <name>example.com/library/${project.artifactId}</name>
+                        // 配置镜像构建器
+                        <builder>mine/java-cnb-builder</builder>
+                        <runImage>mine/java-cnb-run</runImage>
+                        // 配置 docker 环境变量
+                        <env>
+                            <HTTP_PROXY>http://proxy.example.com</HTTP_PROXY>
+                            <HTTPS_PROXY>https://proxy.example.com</HTTPS_PROXY>
+                        </env>
+                        <publish>true</publish>
+                    </image>
+                    <docker>
+                        <host>tcp://192.168.99.100:2376</host>
+                        <tlsVerify>true</tlsVerify>
+                        <certPath>/home/user/.minikube/certs</certPath>
+                        <publishRegistry>
+                            <username>user</username>
+                            <password>secret</password>
+                            <url>https://docker.example.com/v1/</url>
+                            <email>user@example.com</email>
+                        </publishRegistry>
+                    </docker>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+----
+
+== 使用 Dockerfile 构建
+
+1、编写 Dockerfile 文件、
+
+2、使用 `docker build myorg/myapp .` 命令构建
+
+3、使用 `docker run` 命令运行容器
+
+Dockerfile 简单如下示例：
+
+[source]
+----
+# FROM 指令表示将来构建的镜像来自哪个镜像，也就是使用哪个镜像作为基础进行构建。其必须是这个 Dockerfile 第一句有效指令
+# 下面表示需要 JDK8
+FROM adoptopenjdk/openjdk8-openj9:alpine-slim
+
+# MAINTAINER 指令主要指定维护者信息，方便他人寻找作者。
+MAINTAINER xxx@163.com
+
+# RUN 指令用来在 Docker 的编译环境中运行指定命令。其会在 shell 或者 exec 的环境下执行命令，具体格式如下：
+RUN mkdir -p /saga/gateway
+
+# 该指令指定 RUN、CMD 与 ENTRYPOINT 命令的工作目录。
+WORKDIR /saga/gateway
+
+# ENV 指令用来指定在执行 docker run 命令运行镜像时，自动设置的环境变量。这个环境变量可以在后续任何 RUN 指令中使用，并在容器运行时保持。
+# 而且可以通过 docker run 命令的 -e 参数来修改。
+ENV MYSQL_PASSWORD root
+
+# EXPOSE 这条指令用于标明这个镜像中应用将会侦听某个端口，并希望能将这个端口映射到主机的网络界面上。
+EXPOSE 80
+
+# COPY 这条指令用来将本地的文件或文件夹复制到镜像的指定路径下
+# 该指令与 COPY 作用类似，但实现不同。ADD 指令可以从一个 URL 地址上下载内容复制到容器的文件系统中，还可以两压缩打包格式的文件解压后复制到指定路径。
+ADD ./target/blade-gateway.jar ./app.jar
+
+# 这个指定与 CMD 很相似，其相当于把镜像变成一个固定的命令工具，它一般是不可能通过docker run 来改变的
+ENTRYPOINT ["java", "-Djava.security.egd=file:/dev/./urandom", "-jar", "app.jar"]
+
+# VOLUME 该指令用来向基于镜像创建的容器添加数据卷
+# USER 指定运行容器时的用户名或UID(默认为root)
+
+
+# CMD 提供了容器默认的执行命令。Dockerfile 只允许使用一次 CMD 指令，所以如果有多个 CMD 指令时只有最后一个指令生效(后面的指令会覆盖之前的所有指令)。
+# 一般来说这也是整个 Dockerfile 脚本的最后一条指令
+CMD ["--spring.profiles.active=test"]
+----
+
+== 参考文档
+
+https://spring.io/guides/topicals/spring-boot-docker/[官方指南]
+
+http://docs.jcohy.com/docs/spring-gradle-plugins/2.4.5/html5/zh-cn/index.html#build-image[Gradle 插件官方文档]
+
+http://docs.jcohy.com/docs/spring-maven-plugins/2.4.5/html5/zh-cn/index.html#build-image[Maven 插件官方文档]
+
+
+
+
+
+

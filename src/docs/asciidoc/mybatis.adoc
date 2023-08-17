@@ -1,0 +1,1583 @@
+[[mybatis-init]]
+= MyBatis 解析和执行 SQL 分析
+
+本项目使用的是 MybatisPlus 编码，MybatisPlus 通过自动配置为项目注入 `SqlSessionFactory` 实例，初始化 Mybatis 配置，大概分为以下几个步骤。
+
+* 创建 Configuration 全局配置对象，并进行初始化配置
+* 解析 Mapper 接口中的注解信息和 XML 映射文件，解析后的配置信息会形成相应的对象并保存到 Configuration 全局配置对象中
+* 构建 `SqlSessionFactory` 对象，通过它可以创建 `DefaultSqlSessionFactory` 对象，MyBatis 中 `SqlSessionFactory` 的默认实现类
+
+NOTE: 关于创建 Configuration 全局配置对象，这里不做过多说明，当后面遇到的时候会提到。
+
+首先关于代码中的核心类进行简单说明,我们的解析过程将围绕这些核心类展开:
+
+* com.baomidou.mybatisplus.core.MybatisConfiguration：`MybatisConfiguration` 是 MyBatis 框架的配置对象，主要存储了 MyBatis 框架的配置信息，包括数据源配置、事务管理器配置、映射器配置等。它是 MyBatis 的核心配置类，控制着 MyBatis 的整体行为。通过 MybatisSqlSessionFactoryBean 可以访问该配置对象，以便在 Spring 应用程序中定制 MyBatis 的行为。
+* com.baomidou.mybatisplus.extension.spring.MybatisSqlSessionFactoryBean: `MybatisSqlSessionFactoryBean` 是一个 Spring Boot 中的对象，主要作用是创建并管理 Mybatis 的 `SqlSessionFactory`，以便程序可以从中创建一个会话进行数据库操作。 在 Spring Boot 中，通常会配置这个类并将它交给 Spring 容器管理，以便通过 `@Autowired` 将其注入到其他地方使用。当接收到请求时，程序可以从中创建一个会话并使用它执行数据库操作。
+* org.apache.ibatis.builder.xml.XMLMapperBuilder：`XMLMapperBuilder` 对象是 MyBatis 框架中解析 XML 配置文件的类，主要作用是从 XML 文件中读取配置信息，并将其映射为 MyBatis 可以使用的 Configuration 对象，这个对象包含了关于数据源、事务管理、缓存、映射信息等各种配置。`XMLMapperBuilder` 类提供了许多方法来读取配置信息，例如读取 SQL 语句，读取结果映射信息，读取缓存配置等。此外，`XMLMapperBuilder` 也实现了 MyBatis 中解析 XML 文件的核心逻辑。 通过创建 `XMLMapperBuilder` 对象，我们就可以读取并使用 MyBatis 中的配置信息。
+* org.apache.ibatis.builder.MapperBuilderAssistant：`MapperBuilderAssistant` 对象是 MyBatis 框架中的一个辅助类，主要用于帮助解析映射配置文件并创建映射语句对象（MappedStatement）。它通过解析配置文件中的信息，以及通过配置信息对应的映射语句等相关操作来完成对映射配置的解析，并且生成映射语句对象，方便程序员使用。
+* org.apache.ibatis.builder.xml.XMLStatementBuilder：解析 XML 映射文件中的 Statement 配置（`<select />` `<update />` `<delete />` `<insert />` 标签）
+* org.apache.ibatis.parsing.XNode：`XNode` 对象是一个包装类，代表了 XML 文档中的一个节点。`XNode` 用于表示配置信息或映射文件中的节点，其封装了该节点的所有信息，包括该节点的名称、属性、文本内容等。通过对 `XNode` 对象的操作，可以获取该节点的各种信息，并用于解析 Mybatis 配置文件或映射文件中的信息，生成相应的映射关系和执行映射语句等。
+* org.apache.ibatis.mapping.ResultMapping：保存 `<resultMap />` 标签的子标签相关信息，也就是 Java Type 与 Jdbc Type 的映射信息
+* org.apache.ibatis.mapping.ResultMap：保存了 `<resultMap />` 标签的配置信息以及子标签的所有信息
+* org.apache.ibatis.mapping.MappedStatement：保存了解析 `<select />` `<update />` `<delete />` `<insert />` 标签内的 SQL 语句所生成的所有信息
+* org.apache.ibatis.mapping.SqlSource：在 MyBatis 中，`SQLSource` 对象是一个 SQL 语句的表示，它可以被 MyBatis 执行。它用于保存 SQL 文本以及 SQL 语句中可能存在的任何动态参数。`SQLSource` 对象在解析过程中被创建，并用于动态生成将被执行的最终 SQL 语句。 `SQLSource` 对象是 MyBatis 框架的重要组件，因为它允许灵活和动态生成 SQL 语句。这对于需要基于用户输入或其他运行时条件动态构建 SQL 语句的应用程序特别有用。通过使用 `SQLSource` 对象，MyBatis 可以在执行之前生成最终的 SQL 语句，以确保其优化且最新。
+* org.apache.ibatis.scripting.xmltags.XMLLanguageDriver：`LanguageDriver` 的默认实现，它主要用于动态 SQL 的生成。 `XMLLanguageDriver` 是基于 XML 的语言驱动，它是基于 MyBatis 的动态 SQL 标签定义的语言驱动。通过使用 `XMLLanguageDriver`，可以在 SQL 语句的 XML 映射文件中使用动态 SQL 标签，从而生成动态 SQL。
+`XMLLanguageDriver` 允许您在 SQL 语句的映射文件中定义动态 SQL，而不是在 Java 代码中定义。这有助于更好地分离数据访问逻辑和业务逻辑。它也允许您在不更改 Java 代码的情况下修改 SQL 语句，从而更方便地维护和更新您的数据访问代码。
+* org.apache.ibatis.scripting.xmltags.XMLScriptBuilder：`XMLScriptBuilder` 对象是 MyBatis 的一个核心组件，它用于解析和构建 SQL 语句的执行任务，负责将 SQL 脚本（XML 或者注解中定义的 SQL 语句）解析成 `SqlSource`（`DynamicSqlSource` 或者 `RawSqlSource`）资源对象。它使用 XML 映射文件中的信息，将 SQL 语句转换为 `SqlSession` 对象可以执行的任务，并将查询结果映射到 Java 对象。 因此，`XMLScriptBuilder` 对象在 MyBatis 的整个查询过程中起着重要的作用，它解析 XML 映射文件并创建执行 SQL 语句的任务，最终实现查询结果与 Java 对象的映射。
+* org.apache.ibatis.scripting.xmltags.SqlNode：`SqlNode` 是 MyBatis 中的一个接口，它代表了一段 SQL 语句的节点。在 MyBatis 中，动态 SQL 是通过 `SqlNode` 对象生成的。MyBatis 可以使用 SqlNode 对象来生成动态 SQL 语句，并将其作为最终的静态 SQL 语句执行。 通过使用 `SqlNode`，MyBatis 可以在不更改映射文件的情况下更加灵活地生成动态 SQL 语句。`SqlNode` 的使用与具体的数据库无关，因此您可以在不同的数据库环境中使用相同的映射文件。 总的来说，`SqlNode` 对象是 MyBatis 用于动态 SQL 生成的核心组件，它提供了灵活性和可维护性，并且可以在不更改映射文件的情况下生成动态 SQL 语句。MyBatis 中的一些常用的 SqlNode 实现类如下：
+** StaticTextSqlNode：用于生成静态的 SQL 语句。
+** IfSqlNode：用于生成带有 if 条件的动态 SQL 语句。
+** TrimSqlNode：用于生成带有 trim 标签的动态 SQL 语句。
+** WhereSqlNode：用于生成带有 where 子句的动态 SQL 语句。
+** SetSqlNode：用于生成带有 set 标签的动态 SQL 语句。
+** ForEachSqlNode：用于生成带有 foreach 循环的动态 SQL 语句。
+** TextSqlNode：用于生成动态 SQL 语句的基本单元。
+** ChooseSqlNode：用于生成带有 choose 标签的动态 SQL 语句。
+** BindSqlNode：用于生成带有 bind 标签的动态 SQL 语句。
+** MixedSqlNode：用于将多个 SqlNode 对象组合在一起生成动态 SQL 语句。
+* org.apache.ibatis.scripting.xmltags.XMLScriptBuilder.NodeHandler：定义在 `XMLScriptBuilder` 内部的一个接口，用于处理 MyBatis 自定义标签（`<if />` `<foreach />`等），生成对应的 `SqlNode` 对象，不同的实现类处理不同的标签。一些常用的 `NodeHandler` 实现类如下：
+** IfHandler：该类处理 `IfSqlNode` 对象，用于在动态 SQL 中使用 "if", "when" 标签。
+** TrimHandler: 该类处理 `TrimSqlNode` 对象，用于在动态 SQL 中使用 "trim" 标签。
+** WhereHandler: 该类处理 `WhereSqlNode` 对象，用于在动态 SQL 中使用 "where" 标签。
+** ChooseHandler: 该类处理 `ChooseSqlNode` 对象，用于在动态 SQL 中使用 "choose" 标签。
+** SetHandler: 该类处理 `SetSqlNode` 对象，用于在动态 SQL 中使用 "set" 标签。
+** ForEachHandler: 该类处理 `ForEachSqlNode` 对象，用于在动态 SQL 中使用 "foreach" 标签。
+** OtherwiseHandler: 该类处理 `MixedSqlNode`。用于在动态 SQL 中使用 "otherwise" 标签。
+** BindHandler: 该类处理 `VarDeclSqlNode` 对象，用于在动态 SQL 中使用 "bind" 标签。
+* org.apache.ibatis.mapping.SqlSource：的作用是将 SQL 语句封装为可重用的对象，以便在执行数据库操作时使用。这样做可以提高代码的可重用性，同时也方便了对 SQL 语句的维护和管理。
+** DynamicSqlSource：动态 SQL 源，它可以根据传入的参数动态生成最终的 SQL 语句。
+** RawSqlSource：原始 SQL 源，它直接将 SQL 语句传递给 SqlSession，不进行任何额外的处理。
+** StaticSqlSource：静态 SQL 源，它预先将 SQL 语句处理成最终的形式，并在 `SqlSession` 使用时直接使用处理好的 SQL 语句。
+** ProviderSqlSource：它的作用是从实现了 SqlProvider 接口的类中动态生成 SQL 语句。当请求执行数据库操作时，MyBatis 会调用 SqlProvider 接口的方法，并将生成的 SQL 传递给 ProviderSqlSource。ProviderSqlSource 再负责将 SQL 传递给 SqlSession 执行。
+* org.apache.ibatis.scripting.xmltags.DynamicContext：解析动态 SQL 语句时的上下文，用于解析SQL时，记录动态SQL处理后的SQL语句，内部提供 ContextMap 对象保存上下文的参数
+* org.apache.ibatis.builder.SqlSourceBuilder：继承了 `BaseBuilder` 抽象类，`SqlSource` 构建器，负责将 SQL 语句中的 `#{}` 替换成相应的 `?` 占位符，并获取该 `?` 占位符对应的 `ParameterMapping` 对象
+* org.apache.ibatis.builder.ParameterExpression：继承了 `HashMap<String, String>`，参数表达式处理器，在 `SqlSourceBuilder` 处理 `#{}` 的内容时，需要通过其解析成 `key-value` 键值对.
+* org.apache.ibatis.mapping.ParameterMapping：保存 `#{}` 中配置的属性参数信息
+* org.apache.ibatis.mapping.BoundSql：用于数据库可执行的 SQL 语句的最终封装对象
+* org.apache.ibatis.scripting.defaults.DefaultParameterHandler：实现了 `ParameterHandler` 接口，用于将入参设置到 `java.sql.PreparedStatement` 预编译对象中
+
+[[mybatis-init-mapping]]
+== 解析 Mapper 接口与 XML 映射文件
+
+首先，在 `MybatisPlusAutoConfiguration` 自动配置类中，Spring Boot 通过 `MybatisSqlSessionFactoryBean` 来构建  `SqlSessionFactory` 实例,让我们先从 `MybatisSqlSessionFactoryBean` 类的 `buildSqlSessionFactory()` 方法来看看如何完成 XML 文件解析。
+
+[source,java]
+.MybatisSqlSessionFactoryBean
+----
+public class MybatisSqlSessionFactoryBean implements FactoryBean<SqlSessionFactory>, InitializingBean, ApplicationListener<ApplicationEvent> {
+    //... 省略部分代码
+	protected SqlSessionFactory buildSqlSessionFactory() throws Exception {
+        //... 省略部分代码
+        // 判断是否具有 mapper xml 文件
+        if (this.mapperLocations != null) {
+            if (this.mapperLocations.length == 0) {
+                LOGGER.warn(() -> "Property 'mapperLocations' was specified but matching resources are not found.");
+            } else {
+                // 对每一个 mapper 文件进行解析
+                for (Resource mapperLocation : this.mapperLocations) {
+                    if (mapperLocation == null) {
+                        continue;
+                    }
+                    try {
+                        // 使用 XMLMapperBuilder 对象进行解析构建
+                        XMLMapperBuilder xmlMapperBuilder = new XMLMapperBuilder(mapperLocation.getInputStream(),
+                            targetConfiguration, mapperLocation.toString(), targetConfiguration.getSqlFragments());
+                        xmlMapperBuilder.parse();
+                    } catch (Exception e) {
+                        throw new NestedIOException("Failed to parse mapping resource: '" + mapperLocation + "'", e);
+                    } finally {
+                        ErrorContext.instance().reset();
+                    }
+                    LOGGER.debug(() -> "Parsed mapper file: '" + mapperLocation + "'");
+                }
+            }
+        } else {
+            LOGGER.debug(() -> "Property 'mapperLocations' was not specified.");
+        }
+        //... 省略部分代码
+    }
+	//... 省略部分代码
+}
+
+
+----
+
+首先，MybatisPlus 会检查是否具有 mapper 文件，如果存在，并且 mapper 文件数量大于 0，MybatisPlus 循环读取 mapper 文件，并为每一个文件创建一个 Mybatis 的 `XMLMapperBuilder` 对象，该对象包含了 `mapper.xml` 文件流，全路径文件名，Configuration 对象，以及当前对象的 sqlFragments（即 sql 片段）。 至此，进入到 Mybatis 源码环节，使用 XMLMapperBuilder 对象的 `parse` 方法进行解析。我们来深入 `parse` 方法。
+
+[source,java]
+.XMLMapperBuilder
+----
+public class XMLMapperBuilder extends BaseBuilder {
+    //... 省略部分代码
+    public void parse() {
+        // 判断资源是否已经加载过，加载过则不进行处理
+        if (!configuration.isResourceLoaded(resource)) {
+          configurationElement(parser.evalNode("/mapper"));
+          // 将此资源标记为已加载
+          configuration.addLoadedResource(resource);
+          // 绑定 mapper 对象和 mapper 命名空间
+          bindMapperForNamespace();
+        }
+
+        // 解析未完成的结果集
+        parsePendingResultMaps();
+        // 解析未完成的缓存
+        parsePendingCacheRefs();
+        // 解析未完成的 SQL 语句
+        parsePendingStatements();
+    }
+
+	private void configurationElement(XNode context) {
+        try {
+            // 获取命名空间，可见 mapper 文件的命名空间不能为空，也不能为空字符串。我们这里的为: com.mybatis.sql.mapper.UserMapper
+          String namespace = context.getStringAttribute("namespace");
+          if (namespace == null || namespace.isEmpty()) {
+            throw new BuilderException("Mapper's namespace cannot be empty");
+          }
+          // 设置当前的命名空间
+          builderAssistant.setCurrentNamespace(namespace);
+          // 解析 cache-ref 相关配置
+          cacheRefElement(context.evalNode("cache-ref"));
+          // 解析 cache 相关配置
+          cacheElement(context.evalNode("cache"));
+          // 解析 mapper 标签下的  parameterMap 相关配置，参数配置
+          parameterMapElement(context.evalNodes("/mapper/parameterMap"));
+          // 解析 mapper 标签下的 resultMap 相关配置，解析完成后放入到 configuration 的 resultMaps 属性。key 是由我们当前 mapper 文件的命名空间和标签定义里的 id 拼接而来的。这样不同的命名空间就可以只用相同的id定义，由此命名空间起到了隔离的作用。
+          resultMapElements(context.evalNodes("/mapper/resultMap"));
+          // 解析 sql 标签 放入到  configuration   的属性 sqlFragments 参数里，sql 片段信息
+          sqlElement(context.evalNodes("/mapper/sql"));
+          // 这个方法是我们解析 SQL 语句的关键地方，这里包含一些我们的if 等标签的解析。解析完成后存放在
+          buildStatementFromContext(context.evalNodes("select|insert|update|delete"));
+        } catch (Exception e) {
+          throw new BuilderException("Error parsing Mapper XML. The XML location is '" + resource + "'. Cause: " + e, e);
+        }
+    }
+
+    //... 省略部分代码
+
+}
+
+----
+
+[source,java]
+.XNode
+----
+public class XNode {
+    //... 省略部分代码
+	public XNode evalNode(String expression) {
+        return xpathParser.evalNode(node, expression);
+    }
+	//... 省略部分代码
+}
+----
+
+[source,java]
+.XPathParser
+----
+public class XPathParser {
+	//... 省略部分代码
+	public XNode evalNode(Object root, String expression) {
+        Node node = (Node) evaluate(expression, root, XPathConstants.NODE);
+        if (node == null) {
+            return null;
+        }
+        return new XNode(this, node, variables);
+    }
+	//... 省略部分代码
+}
+
+----
+
+Mybatis 3.5 中将 xml 文件解析为 `XNode` 对象的方法是通过 `XMLParser` 进行解析。`XMLParser` 是 Mybatis 提供的一个用于解析 xml 文件的工具类，可以读取 xml 文件，并将其转换为 `XNode` 对象。解析过程不做过多说明，我们现在只需要关心 `XNODE` 节点信息即可。
+
+通过以上源码可知，`configurationElement(parser.evalNode("/mapper"))` 这个方法就是解析整个 mapper 文件的入口，主要包含以下属性：
+
+* cache-ref：该命名空间引用其他命名空间的缓存配置
+* cache：该命名空间的缓存配置
+* parameterMap：参数映射
+* resultMap：描述如何从数据库结果集中加载对象
+* sql：可被其他语句引用的可重用语句块，SQL 片段
+* select：映射查询语句
+* insert：映射插入语句
+* update：映射更新语句
+* delete：映射删除语句
+
+下面我们进入到这些方法中看看发生了什么？
+
+=== cacheRefElement 方法
+
+`cacheRefElement(XNode context)` 方法用于解析XML映射文件中的 `<cache-ref />` 节点，代码如下：
+
+[source,java]
+.XMLMapperBuilder
+----
+public class XMLMapperBuilder extends BaseBuilder {
+    //... 省略部分代码
+    private void cacheRefElement(XNode context) {
+        if (context != null) {
+            // <1> 获得指向的 namespace 名字，并添加到 configuration 的 cacheRefMap 中
+            configuration.addCacheRef(builderAssistant.getCurrentNamespace(), context.getStringAttribute("namespace"));
+            // <2> 创建 CacheRefResolver 对象
+            CacheRefResolver cacheRefResolver = new CacheRefResolver(builderAssistant, context.getStringAttribute("namespace"));
+            try {
+                // 执行解析，获取引用的缓存对象到自己这里
+                cacheRefResolver.resolveCacheRef();
+            } catch (IncompleteElementException e) {
+                configuration.addIncompleteCacheRef(cacheRefResolver);
+            }
+        }
+    }
+    //... 省略部分代码
+}
+----
+
+解析当前 XML 映射文件的缓存配置，将当前 namespace 缓存引用其他的 namespace 的缓存形成映射关系保存在 Configuration 全局配置对象中
+
+获取引用的 namespace 的缓存实例，将其设置到 `MapperBuilderAssistant` 构造器助手中，在后续构建相关对象时使用
+
+=== cacheElement 方法
+
+`cacheElement(XNode context)` 方法用于 XML 映射文件中的 `<cache />` 节点，代码如下：
+
+[source,java]
+.XMLMapperBuilder
+----
+public class XMLMapperBuilder extends BaseBuilder {
+	//... 省略部分代码
+    private void cacheElement(XNode context) {
+        if (context != null) {
+            // <1> 获得负责存储的 Cache 实现类
+            String type = context.getStringAttribute("type", "PERPETUAL");
+            Class<? extends Cache> typeClass = typeAliasRegistry.resolveAlias(type);
+            // <2> 获得负责过期的 Cache 实现类
+            String eviction = context.getStringAttribute("eviction", "LRU");
+            Class<? extends Cache> evictionClass = typeAliasRegistry.resolveAlias(eviction);
+            // <3> 获得 flushInterval、size、readWrite、blocking 属性
+            Long flushInterval = context.getLongAttribute("flushInterval");
+            Integer size = context.getIntAttribute("size");
+            boolean readWrite = !context.getBooleanAttribute("readOnly", false);
+            boolean blocking = context.getBooleanAttribute("blocking", false);
+            // <4> 获得 Properties 属性
+            Properties props = context.getChildrenAsProperties();
+            // <5> 创建 Cache 对象
+            builderAssistant.useNewCache(typeClass, evictionClass, flushInterval, size, readWrite, blocking, props);
+        }
+    }
+	//... 省略部分代码
+}
+----
+
+解析该节点的相关配置，然后通过 `MapperBuilderAssistant` 构造器小助手创建一个 `Cache` 缓存实例，添加到 Configuration 全局配置对象中，并设置到构造器助手中，在后续构建相关对象时使用
+
+=== parameterMapElement 方法
+
+`parameterMapElement(List<XNode> list)` 方法主要用来解析 `<parameterMap />` 其代码如下：
+
+[source,java]
+.XMLMapperBuilder
+----
+public class XMLMapperBuilder extends BaseBuilder {
+    //... 省略部分代码
+    private void parameterMapElement(List<XNode> list) {
+        for (XNode parameterMapNode : list) {
+			// 获取 id 和 type 类型
+            String id = parameterMapNode.getStringAttribute("id");
+            String type = parameterMapNode.getStringAttribute("type");
+			// 获取 type 对象的 clazz 对象
+            Class<?> parameterClass = resolveClass(type);
+			// 获取所有的 parameter 节点
+            List<XNode> parameterNodes = parameterMapNode.evalNodes("parameter");
+            List<ParameterMapping> parameterMappings = new ArrayList<>();
+            for (XNode parameterNode : parameterNodes) {
+				// 获取节点属性
+                String property = parameterNode.getStringAttribute("property");
+                String javaType = parameterNode.getStringAttribute("javaType");
+                String jdbcType = parameterNode.getStringAttribute("jdbcType");
+                String resultMap = parameterNode.getStringAttribute("resultMap");
+                String mode = parameterNode.getStringAttribute("mode");
+                String typeHandler = parameterNode.getStringAttribute("typeHandler");
+                Integer numericScale = parameterNode.getIntAttribute("numericScale");
+				// 获取参数模型，输入，输出，输入输出
+                ParameterMode modeEnum = resolveParameterMode(mode);
+                Class<?> javaTypeClass = resolveClass(javaType);
+                JdbcType jdbcTypeEnum = resolveJdbcType(jdbcType);
+                Class<? extends TypeHandler<?>> typeHandlerClass = resolveClass(typeHandler);
+				//
+				ParameterMapping parameterMapping = builderAssistant.buildParameterMapping(parameterClass, property, javaTypeClass, jdbcTypeEnum, resultMap, modeEnum, typeHandlerClass, numericScale);
+                parameterMappings.add(parameterMapping);
+            }
+			// 构建 ParameterMap 对象
+            builderAssistant.addParameterMap(id, parameterClass, parameterMappings);
+        }
+    }
+    //... 省略部分代码
+}
+----
+
+. 获取  `<parameterMap />` 节点的 `id` 和 `type` 属性，并获取 type 所对应的 clazz 对象
+. 获取所有的 `<parameter />` 节点，进行逐个解析，获取他的所有节点信息。
+. 通过 `MapperBuilderAssistant.buildParameterMapping()` 方法获取到一个 `ParameterMapping` 对象。并添加到 `parameterMappings` 集合中。
+. 通过 `MapperBuilderAssistant.addParameterMap` 方法构建 `ParameterMap` 对象并添加到 Configuration 全局配置中
+
+[source,java]
+.MapperBuilderAssistant
+----
+public class MapperBuilderAssistant extends BaseBuilder {
+	public ParameterMap addParameterMap(String id, Class<?> parameterClass, List<ParameterMapping> parameterMappings) {
+        id = applyCurrentNamespace(id, false);
+        ParameterMap parameterMap = new ParameterMap.Builder(configuration, id, parameterClass, parameterMappings).build();
+        configuration.addParameterMap(parameterMap);
+    return parameterMap;
+    }
+}
+----
+
+. 获取 id
+. 通过 `ParameterMap.Builder` 构建一个 `ParameterMap` 对象，并添加到 Configuration 全局配置中
+
+=== resultMapElements 方法
+
+`resultMapElements(List<XNode> list)` 方法用于解析 `<resultMap />` 节点，最后会调用 `resultMapElement(XNode resultMapNode, List<ResultMapping> additionalResultMappings, Class<?> enclosingType)` 方法逐个解析生成 `ResultMap` 对象，关于 `resultMapElement` 方法参数说明：
+
+* resultMapElement：当前节点信息
+* additionalResultMappings：继承的 ResultMap 所对应的 ResultMapping 的集合，可以通过 extend 属性配置继承哪个 ResultMap，没有继承的话就是空集合
+* enclosingType：所属的 ResultMap 的类型，例如 `<resultMap />` 中的 `<association />` 也会被解析成 ResultMap，那么它的 enclosingType 就是所属 ResultMap 的 Class 对象
+
+[source,java]
+.XMLMapperBuilder
+----
+public class XMLMapperBuilder extends BaseBuilder {
+	//... 省略部分代码
+    /**
+    * resultMapNode: 当前节点信息
+    * additionalResultMappings：继承的 ResultMap 所对应的 ResultMapping 的集合，可以通过 extend 属性配置继承哪个 ResultMap，没有继承的话就是空集合
+    * enclosingType：所属的 ResultMap 的类型，例如 <resultMap /> 中的 <association /> 也会被解析成 ResultMap，那么它的 enclosingType 就是所属 ResultMap 的 Class 对象
+    */
+    private ResultMap resultMapElement(XNode resultMapNode, List<ResultMapping> additionalResultMappings, Class<?> enclosingType) throws Exception {
+        // 获取当前线程的上下文
+        ErrorContext.instance().activity("processing " + resultMapNode.getValueBasedIdentifier());
+        // <1> 获得 type 属性, 也既 resultMap 映射的类 javaType、resultType、ofType、type 优先级顺序是 type > ofType > resultType >javaType。
+        String type = resultMapNode.getStringAttribute("type", resultMapNode.getStringAttribute("ofType",
+                resultMapNode.getStringAttribute("resultType", resultMapNode.getStringAttribute("javaType"))));
+        // 从别名注册表中获得 type 对应的类
+        Class<?> typeClass = resolveClass(type);
+        if (typeClass == null) {
+            // 从 enclosingType Class 对象获取该 property 属性的 Class 对象
+            typeClass = inheritEnclosingType(resultMapNode, enclosingType);
+        }
+        Discriminator discriminator = null;
+        // 创建 ResultMapping 集合
+        List<ResultMapping> resultMappings = new ArrayList<>();
+        // 添加父 ResultMap 的 ResultMapping 集合
+        resultMappings.addAll(additionalResultMappings);
+        // <2> 遍历 <resultMap /> 的子节点
+        List<XNode> resultChildren = resultMapNode.getChildren();
+        for (XNode resultChild : resultChildren) {
+            if ("constructor".equals(resultChild.getName())) {
+                // <2.a> 处理 <constructor /> 节点
+                processConstructorElement(resultChild, typeClass, resultMappings);
+            } else if ("discriminator".equals(resultChild.getName())) {
+                // <2.b> 处理 <discriminator /> 节点
+                discriminator = processDiscriminatorElement(resultChild, typeClass, resultMappings);
+            } else {
+                // <2.c> 处理其它节点
+                List<ResultFlag> flags = new ArrayList<>();
+                if ("id".equals(resultChild.getName())) {
+                  // 为添加该 ResultMapping 添加一个 Id 标志
+                    flags.add(ResultFlag.ID);
+                }
+                // 生成对应的 ResultMapping 对象
+                resultMappings.add(buildResultMappingFromContext(resultChild, typeClass, flags));
+            }
+        }
+        // 获得 id 属性，没有的话自动生成
+        String id = resultMapNode.getStringAttribute("id", resultMapNode.getValueBasedIdentifier());
+        // 获得 extends 属性
+        String extend = resultMapNode.getStringAttribute("extends");
+        // 获得 autoMapping 属性
+        Boolean autoMapping = resultMapNode.getBooleanAttribute("autoMapping");
+        // <3> 创建 ResultMapResolver 对象，执行解析
+        ResultMapResolver resultMapResolver = new ResultMapResolver(builderAssistant, id, typeClass, extend,
+                discriminator, resultMappings, autoMapping);
+        try {
+          // 处理 ResultMap 并添加到 Configuration 全局配置中
+            return resultMapResolver.resolve();
+        } catch (IncompleteElementException e) {
+            configuration.addIncompleteResultMap(resultMapResolver);
+            throw e;
+        }
+    }
+    //... 省略部分代码
+}
+----
+
+. 获得 type 属性，生成该 ResultMap 对应 Class 对象，如果没有定义 type 属性，则可能是 `<association />` 标签，尝试从所属 ResultMap 的 Class 对象获取 property 的 Class 对象，因为 `<resultMap />` 标签中配置的 `<association />` 标签也会解析成一个 `ResultMap` 对象
+. 遍历 `<resultMap />` 的子节点，依次处理
+.. 如果是 `<constructor />` 节点，则调用 `processConstructorElement` 方法进行解析，再获取它的子节点生成对应的 `RequestMapping` 对象，这些 `RequestMapping` 对象会添加 `ResultFlag.CONSTRUCTOR` 标记，如果是 `<idArg />` 标签则再添加一个 `ResultFlag.ID` 标记，这些对象会在实例化类时，注入到构造方法中
+.. 如果是 `<discriminator>` 节点，则调用 `processDiscriminatorElement` 方法进行解析，创建一个 `Discriminator` 选择器对象，用于可以使用结果值来决定这个属性使用哪个 ResultMap，基于 `<case />` 子节点来进行映射
+.. 其他节点，则调用 `buildResultMappingFromContext` 方法进行解析，如果是 `<id />` 则添加一个 `ResultFlag.ID` 标记，生成对应的 `RequestMapping` 对象
+. 创建 `ResultMapResolver` 对象，调用其 `resolve()` 方法执行解析，内部调用 `MapperBuilderAssistant` 构造器小助手的 `addResultMap` 来生成 `ResultMap` 对象
+
+上面的 2.a 和 2.b 并不复杂，感兴趣的小伙伴可以查看相关方法，都已经注释好了，我们来看下 2.c 是如何解析成 ResultMapping 对象的
+
+[source,java]
+.XMLMapperBuilder
+----
+public class XMLMapperBuilder extends BaseBuilder {
+	//... 省略部分代码
+    private ResultMapping buildResultMappingFromContext(XNode context, Class<?> resultType, List<ResultFlag> flags) {
+        String property;
+        // 如果是构造方法节点
+        if (flags.contains(ResultFlag.CONSTRUCTOR)) {
+          property = context.getStringAttribute("name");
+        } else {
+          property = context.getStringAttribute("property");
+        }
+        String column = context.getStringAttribute("column");
+        String javaType = context.getStringAttribute("javaType");
+        String jdbcType = context.getStringAttribute("jdbcType");
+        String nestedSelect = context.getStringAttribute("select");
+        // 解析 <resultMap /> 标签中的 <association />，<collection />，<case /> 标签，生成 ResultMap 对象
+        String nestedResultMap = context.getStringAttribute("resultMap", () ->
+            processNestedResultMappings(context, Collections.emptyList(), resultType));
+        String notNullColumn = context.getStringAttribute("notNullColumn");
+        String columnPrefix = context.getStringAttribute("columnPrefix");
+        String typeHandler = context.getStringAttribute("typeHandler");
+        String resultSet = context.getStringAttribute("resultSet");
+        String foreignColumn = context.getStringAttribute("foreignColumn");
+        boolean lazy = "lazy".equals(context.getStringAttribute("fetchType", configuration.isLazyLoadingEnabled() ? "lazy" : "eager"));
+        // javaType 属性
+        Class<?> javaTypeClass = resolveClass(javaType);
+        // typeHandler 属性
+        Class<? extends TypeHandler<?>> typeHandlerClass = resolveClass(typeHandler);
+        JdbcType jdbcTypeEnum = resolveJdbcType(jdbcType);
+        // 通过上面的属性构建一个 ResultMapping 对象
+        return builderAssistant.buildResultMapping(resultType, property, column, javaTypeClass, jdbcTypeEnum, nestedSelect, nestedResultMap, notNullColumn, columnPrefix, typeHandlerClass, flags, resultSet, foreignColumn, lazy);
+    }
+
+    private String processNestedResultMappings(XNode context, List<ResultMapping> resultMappings, Class<?> enclosingType) {
+        if (Arrays.asList("association", "collection", "case").contains(context.getName())
+            && context.getStringAttribute("select") == null) {
+          validateCollection(context, enclosingType);
+          ResultMap resultMap = resultMapElement(context, resultMappings, enclosingType);
+          return resultMap.getId();
+        }
+        return null;
+    }
+    //... 省略部分代码
+}
+----
+
+获取节点的各种属性信息，这里我们可以看到，当节点为 `<association />`，`<collection />`或者 `<case />` 时，则会调用 `processNestedResultMappings` 方法解析成 `ResultMap` 对象，然后返回该对象的 `id`（没有定义会自动生成），这样这个 `RequestMapping` 对象就会关联这个 `ResultMap` 对象了，这个方法内部也是调用 `resultMapElement` 方法生成 `ResultMap` 对象的。
+
+最后通过 `MapperBuilderAssistant` 构造器小助手的 `buildResultMapping` 方法根据这些属性构建一个 `ResultMapping` 对象并返回。
+
+[source,java]
+.MapperBuilderAssistant
+----
+public class MapperBuilderAssistant extends BaseBuilder {
+	//... 省略部分代码
+    public ResultMapping buildResultMapping(
+      Class<?> resultType,
+      String property,
+      String column,
+      Class<?> javaType,
+      JdbcType jdbcType,
+      String nestedSelect,
+      String nestedResultMap,
+      String notNullColumn,
+      String columnPrefix,
+      Class<? extends TypeHandler<?>> typeHandler,
+      List<ResultFlag> flags,
+      String resultSet,
+      String foreignColumn,
+      boolean lazy) {
+        // <1> 获取属性的 java 类型。例如: java.lang.String。其原理是根据 resultType 通过反射来获取属性类型。
+        Class<?> javaTypeClass = resolveResultJavaType(resultType, property, javaType);
+        TypeHandler<?> typeHandlerInstance = resolveTypeHandler(javaTypeClass, typeHandler);
+        List<ResultMapping> composites;
+		// <2> 解析组合字段名称成 ResultMapping 集合，涉及「关联的嵌套查询」
+        if ((nestedSelect == null || nestedSelect.isEmpty()) && (foreignColumn == null || foreignColumn.isEmpty())) {
+          composites = Collections.emptyList();
+        } else {
+			// RequestMapping 关联了子查询，如果 column 配置了多个则一一再创建 RequestMapping 对象
+          composites = parseCompositeColumnName(column);
+        }
+        // <3> 创建 ResultMapping 对象
+        return new ResultMapping.Builder(configuration, property, column, javaTypeClass)
+            .jdbcType(jdbcType)
+            .nestedQueryId(applyCurrentNamespace(nestedSelect, true))
+            .nestedResultMapId(applyCurrentNamespace(nestedResultMap, true))
+            .resultSet(resultSet)
+            .typeHandler(typeHandlerInstance)
+            .flags(flags == null ? new ArrayList<>() : flags)
+            .composites(composites)
+            .notNullColumns(parseMultipleColumnNames(notNullColumn))
+            .columnPrefix(columnPrefix)
+            .foreignColumn(foreignColumn)
+            .lazy(lazy)
+            .build();
+    }
+    //... 省略部分代码
+}
+
+----
+
+. 解析对应的 Java Type 和 TypeHandler 的 Class 对象，
+. 如果嵌套的子查询存在组合字段，则一一解析成 `ResultMapping` 对象，例如需要在返回的结果集中取多个列作为嵌套查询的入参，那么你需要配置多个映射关系。例如子查询的入参对象有两个属性，分别是 `name` 和 `age`，而上一层查询从数据库返回的列名是 `studentName` 和 `studentAge`，那么你需要在嵌套查询配置 `column` 属性为：`{name=studentName,age=studentAge}`，不然没有映射关系无法设置子查询的入参，这样就会为该属性创建两个 `ResultMapping` 添加到 `composites` 集合中
+. 调用 `applyCurrentNamespace` 方法，拼接命名空间
+. 调用 `parseMultipleColumnNames` 方法，将字符串（以逗号分隔）解析成集合，作用： 默认情况下，在至少一个被映射到属性的列不为空时，子对象才会被创建。
+. 通过 `ResultMapping.Builder` 构建一个 `ResultMapping` 对象
+
+`ResultMapping` 对象构建成功后，最后通过 `ResultMapResolver.resolve()` 方法执行解析，
+
+至此整个的 `ResultMap` 对象的解析过程到这里就结束了。内部调用 `MapperBuilderAssistant` 构造器小助手的 `addResultMap` 来生成 `ResultMap` 对象
+
+[source,java]
+----
+public class XMLMapperBuilder extends BaseBuilder {
+	  public ResultMap addResultMap(String id, Class<?> type, String extend, Discriminator discriminator,
+            List<ResultMapping> resultMappings, Boolean autoMapping) {
+            // <1> 获得 ResultMap 编号，即格式为 `${namespace}.${id}`
+            id = applyCurrentNamespace(id, false);
+			// <2.1> 获取完整的父 ResultMap 属性，即格式为 `${namespace}.${extend}`。从这里的逻辑来看，貌似只能获取自己 namespace 下的 ResultMap 。
+			extend = applyCurrentNamespace(extend, true);
+            // <2.2> 如果有父类，则将父类的 ResultMap 集合，添加到 resultMappings 中。
+            if (extend != null) {
+				// <2.2> 如果有父类，则将父类的 ResultMap 集合，添加到 resultMappings 中。
+                if (!configuration.hasResultMap(extend)) {
+                    throw new IncompleteElementException("Could not find a parent resultmap with id '" + extend + "'");
+                }
+                ResultMap resultMap = configuration.getResultMap(extend);
+				// 获取 extend 的 ResultMap 对象的 ResultMapping 集合，并移除 resultMappings
+                List<ResultMapping> extendedResultMappings = new ArrayList<>(resultMap.getResultMappings());
+                extendedResultMappings.removeAll(resultMappings);
+                // Remove parent constructor if this resultMap declares a constructor.
+                // 判断当前的 resultMappings 是否有构造方法，如果有，则从 extendedResultMappings 移除所有的构造类型的 ResultMapping
+                boolean declaresConstructor = false;
+                for (ResultMapping resultMapping : resultMappings) {
+                    if (resultMapping.getFlags().contains(ResultFlag.CONSTRUCTOR)) {
+                        declaresConstructor = true;
+                        break;
+                    }
+                }
+                if (declaresConstructor) {
+                    extendedResultMappings.removeIf(resultMapping -> resultMapping.getFlags().contains(ResultFlag.CONSTRUCTOR));
+                }
+				// 将 extendedResultMappings 添加到 resultMappings 中
+                resultMappings.addAll(extendedResultMappings);
+            }
+			// <3> 创建 ResultMap 对象
+            ResultMap resultMap = new ResultMap.Builder(configuration, id, type, resultMappings, autoMapping)
+                .discriminator(discriminator)
+                .build();
+			// <4> 添加到 configuration 中
+            configuration.addResultMap(resultMap);
+            return resultMap;
+          }
+}
+----
+
+. 调用 `applyCurrentNamespace` 方法拼接 `namespace` 与 `id`，获得 `ResultMap` 的唯一编号，格式为 `${namespace}.${id}`
+. 获得父 `ResultMap` 的唯一编号 extend，格式为 `${namespace}.${extend}`
+.. extend 为 null 则直接忽略
+.. 否则获取对应的 `ResultMap` 对象，则将 `extend` 的 `ResultMapping` 集合和自己的 `ResultMapping` 集合进行合并
+. 通过 `ResultMap.Builder` 构建一个 `ResultMap` 对象，并添加到 `Configuration` 全局配置中
+
+=== sqlElement 方法
+
+`sqlElement(List<XNode> list)` 方法用于解析所有的 `<sql />` 节点，内部调用 `sqlElement(List<XNode> list, String requiredDatabaseId)` 方法，代码如下：
+
+[source,java]
+.XMLMapperBuilder
+----
+public class XMLMapperBuilder extends BaseBuilder {
+	//... 省略部分代码
+    private void sqlElement(List<XNode> list, String requiredDatabaseId) {
+		// <1> 遍历所有 <sql /> 节点
+		for (XNode context : list) {
+			// <2> 获得 databaseId 属性
+			String databaseId = context.getStringAttribute("databaseId");
+			// <3> 获得完整的 id 属性
+			String id = context.getStringAttribute("id");
+			// 设置为 `${namespace}.${id}` 格式
+			id = builderAssistant.applyCurrentNamespace(id, false);
+			// <4> 判断 databaseId 是否匹配
+			if (databaseIdMatchesCurrent(id, databaseId, requiredDatabaseId)) {
+				// <5> 添加到 sqlFragments 中
+				sqlFragments.put(id, context);
+			}
+		}
+	}
+	//... 省略部分代码
+}
+----
+
+这里仅仅是将该 `<sql />` 节点保存至 `Map<String, XNode> sqlFragments` 对象中（该对象保存与 Configuration 全局配置对象中），后续解析其他 SQL 语句中会使用到，例如查询语句中使用了 `<include />` 标签，则需要获取到对应的 `<sql />` 节点将其替换。
+
+=== buildStatementFromContext 方法
+
+`buildStatementFromContext(List<XNode> list)` 方法用于解析 `<select />` `<insert />` `<update />` `<delete />` 节点
+
+内部调用 `buildStatementFromContext(List<XNode> list, String requiredDatabaseId)` 方法逐个解析生成 `MappedStatement` 对象，代码如下：
+
+[source,java]
+.XMLMapperBuilder
+----
+public class XMLMapperBuilder extends BaseBuilder {
+	//... 省略部分代码
+    private void buildStatementFromContext(List<XNode> list, String requiredDatabaseId) {
+		// <1> 遍历 <select /> <insert /> <update /> <delete /> 节点
+		for (XNode context : list) {
+			// <1> 创建 XMLStatementBuilder 对象
+			final XMLStatementBuilder statementParser = new XMLStatementBuilder(configuration, builderAssistant, context, requiredDatabaseId);
+			try {
+				// 解析成 MappedStatement 对象
+				statementParser.parseStatementNode();
+			} catch (IncompleteElementException e) {
+				// <2> 解析失败，添加到 configuration 中
+				configuration.addIncompleteStatement(statementParser);
+			}
+		}
+	}
+	//... 省略部分代码
+}
+----
+
+为该节点创建 `XMLStatementBuilder` 对象，然后调用其 `parseStatementNode()` 解析成 `MappedStatement` 对象，解析过程在下面的 `XMLStatementBuilder` 中讲到
+
+[source,java]
+.XMLStatementBuilder
+----
+public class XMLStatementBuilder extends BaseBuilder {
+	//... 省略部分代码
+    public void parseStatementNode() {
+		// 获得 id 属性，编号。
+        String id = context.getStringAttribute("id");
+		// 获得 databaseId ， 判断 databaseId 是否匹配
+        String databaseId = context.getStringAttribute("databaseId");
+
+        if (!databaseIdMatchesCurrent(id, databaseId, this.requiredDatabaseId)) {
+          return;
+        }
+        // 获取该节点名称
+        String nodeName = context.getNode().getNodeName();
+		// <1> 根据节点名称判断 SQL 类型
+        SqlCommandType sqlCommandType = SqlCommandType.valueOf(nodeName.toUpperCase(Locale.ENGLISH));
+		// 是否为 Select 语句
+        boolean isSelect = sqlCommandType == SqlCommandType.SELECT;
+		// <2> 是否清空缓存
+        boolean flushCache = context.getBooleanAttribute("flushCache", !isSelect);
+		// <3> 是否使用缓存
+        boolean useCache = context.getBooleanAttribute("useCache", isSelect);
+        boolean resultOrdered = context.getBooleanAttribute("resultOrdered", false);
+
+        // Include Fragments before parsing
+        XMLIncludeTransformer includeParser = new XMLIncludeTransformer(configuration, builderAssistant);
+		// <4> 将该节点的子节点 <include /> 转换成 <sql /> 节点
+        includeParser.applyIncludes(context.getNode());
+
+		// 获取参数类型名称
+        String parameterType = context.getStringAttribute("parameterType");
+		// <5> 参数类型名称转换成 Java Type
+        Class<?> parameterTypeClass = resolveClass(parameterType);
+
+		// <6> 获得 lang 对应的 LanguageDriver 对象
+        String lang = context.getStringAttribute("lang");
+        LanguageDriver langDriver = getLanguageDriver(lang);
+
+        // Parse selectKey after includes and remove them.
+        // <7> 将该节点的子节点 <selectKey /> 解析成 SelectKeyGenerator 生成器
+        processSelectKeyNodes(id, parameterTypeClass, langDriver);
+
+        // Parse the SQL (pre: <selectKey> and <include> were parsed and removed)
+        KeyGenerator keyGenerator;
+        String keyStatementId = id + SelectKeyGenerator.SELECT_KEY_SUFFIX;
+        keyStatementId = builderAssistant.applyCurrentNamespace(keyStatementId, true);
+
+        /*
+         * <8>
+         * 1. 如果上面存在 <selectKey /> 子节点，则获取上面对其解析后生成的 SelectKeyGenerator
+         * 2. 否则判断该节点是否配置了 useGeneratedKeys 属性为 true 并且是 插入语句，则使用 Jdbc3KeyGenerator
+         */
+        if (configuration.hasKeyGenerator(keyStatementId)) {
+            keyGenerator = configuration.getKeyGenerator(keyStatementId);
+        } else {
+              keyGenerator = context.getBooleanAttribute("useGeneratedKeys",
+                  configuration.isUseGeneratedKeys() && SqlCommandType.INSERT.equals(sqlCommandType))
+                  ? Jdbc3KeyGenerator.INSTANCE : NoKeyGenerator.INSTANCE;
+        }
+
+		// <9> 创建对应的 SqlSource 对象，保存了该节点下 SQL 相关信息
+        SqlSource sqlSource = langDriver.createSqlSource(configuration, context, parameterTypeClass);
+		// <10> 获得 Statement 类型，默认 PREPARED
+        StatementType statementType = StatementType.valueOf(context.getStringAttribute("statementType", StatementType.PREPARED.toString()));
+        Integer fetchSize = context.getIntAttribute("fetchSize");
+        Integer timeout = context.getIntAttribute("timeout");
+        String parameterMap = context.getStringAttribute("parameterMap");
+		// <11> 获得返回结果类型名称
+        String resultType = context.getStringAttribute("resultType");
+		// 获取返回结果的 Java Type
+        Class<?> resultTypeClass = resolveClass(resultType);
+		// 获取 resultMap
+        String resultMap = context.getStringAttribute("resultMap");
+        String resultSetType = context.getStringAttribute("resultSetType");
+        ResultSetType resultSetTypeEnum = resolveResultSetType(resultSetType);
+        if (resultSetTypeEnum == null) {
+            resultSetTypeEnum = configuration.getDefaultResultSetType();
+        }
+		// 对应的 java 属性，结合 useGeneratedKeys 使用
+        String keyProperty = context.getStringAttribute("keyProperty");
+		// 对应的 column 列名，结合 useGeneratedKeys 使用
+        String keyColumn = context.getStringAttribute("keyColumn");
+        String resultSets = context.getStringAttribute("resultSets");
+
+		// <12> 构建 MappedStatement 对象
+        builderAssistant.addMappedStatement(id, sqlSource, statementType, sqlCommandType,
+            fetchSize, timeout, parameterMap, parameterTypeClass, resultMap, resultTypeClass,
+            resultSetTypeEnum, flushCache, useCache, resultOrdered,
+            keyGenerator, keyProperty, keyColumn, databaseId, langDriver, resultSets);
+    }
+
+	//... 省略部分代码
+}
+----
+
+这部分的解析比较长，也比较繁琐。
+
+. 根据节点名称设置 SQL 语句类型，SqlCommandType 有六种类型：`UNKNOWN`, `INSERT`, `UPDATE`, `DELETE`, `SELECT`, `FLUSH`
+. 获取 `flushCache` 属性，是否清空缓存，非查询语句默认都是 `true`
+. 获取 `useCache` 属性，是否开启缓存，查询语句默认为 `true`
+. 创建 `XMLIncludeTransformer` 对象，调用其 `applyIncludes` 方法将 `<include />` 转换成 `<sql />` 节点，大致逻辑就是从 sqlFragments（前面已经将所有的 `<sql />` 节点进行解析存放在其中了）获取对应的 `<sql />` 节点，然后替换 `<include />` 节点，具体的转换过程这里就不讲述了，没有特别复杂。
+. 获取 `parameterType` 属性，参数类型，转换成 `Class` 对象
+. 获取 lang 属性，`LanguageDriver` 语言驱动器，默认为 `XMLLanguageDriver`
+. 将该节点的 `<selectKey />` 子节点解析成 `SelectKeyGenerator` 生成器，用于生成一个 key 设置到返回对象中，在 `processSelectKeyNodes` 方法中可以看到，该过程也会生成一个 `MappedStatement` 对象，生成的对象的 `id` 为 `statementId+'!selectKey'`
+. 解析 `useGeneratedKeys` 属性，获取 `SelectKeyGenerator` 生成器，如果第 7 步没有生成才会进入这里，直接返回 `Jdbc3KeyGenerator` 单例
+. 根据 `XMLLanguageDriver` 语言驱动创建 `SqlSource` 对象，通过这个对象可以获取到对应的 SQL 语句，在后面的 <<mybatis-init-sql>> 分析该创建过程
+. 获取 `statementType` 属性，`Statement` 类型，默认 `PREPARED`
+. 获取其他的一下相关信息，例如：`timeout`、`resultMap`、`keyProperty`、`keyColumn` 等属性，其中配置的 `resultType` 也会转换成 `ResultMap` 对象
+. 通过 `MapperBuilderAssistant` 构造器小助手根据这些属性信息构建一个 `MappedStatement` 对象
+
+[source,java]
+.MapperBuilderAssistant
+----
+public class MapperBuilderAssistant extends BaseBuilder {
+	//... 省略部分代码
+    public MappedStatement addMappedStatement(String id, SqlSource sqlSource, StatementType statementType,
+            SqlCommandType sqlCommandType, Integer fetchSize, Integer timeout, String parameterMap,
+            Class<?> parameterType, String resultMap, Class<?> resultType, ResultSetType resultSetType,
+            boolean flushCache, boolean useCache, boolean resultOrdered, KeyGenerator keyGenerator, String keyProperty,
+            String keyColumn, String databaseId, LanguageDriver lang, String resultSets) {
+
+        // <1> 如果的指向的 Cache 未解析，抛出异常
+        if (unresolvedCacheRef) {
+            throw new IncompleteElementException("Cache-ref not yet resolved");
+        }
+
+        // <2> 获得 id 编号，格式为 `${namespace}.${id}`
+        id = applyCurrentNamespace(id, false);
+        // 是否为查询语句
+        boolean isSelect = sqlCommandType == SqlCommandType.SELECT;
+
+        // <3> 创建 MappedStatement.Builder 对象
+        MappedStatement.Builder statementBuilder = new MappedStatement.Builder(configuration, id, sqlSource,
+                sqlCommandType).resource(resource).fetchSize(fetchSize).timeout(timeout).statementType(statementType)
+                        .keyGenerator(keyGenerator).keyProperty(keyProperty).keyColumn(keyColumn).databaseId(databaseId)
+                        .lang(lang).resultOrdered(resultOrdered).resultSets(resultSets)
+                        .resultMaps(getStatementResultMaps(resultMap, resultType, id)).resultSetType(resultSetType)
+                        .flushCacheRequired(valueOrDefault(flushCache, !isSelect))
+                        .useCache(valueOrDefault(useCache, isSelect)).cache(currentCache);
+
+        // <4> 生成 ParameterMap 对象
+        ParameterMap statementParameterMap = getStatementParameterMap(parameterMap, parameterType, id);
+        if (statementParameterMap != null) {
+            statementBuilder.parameterMap(statementParameterMap);
+        }
+
+        // <5> 创建 MappedStatement 对象
+        MappedStatement statement = statementBuilder.build();
+        // <6> 添加到 configuration 中
+        configuration.addMappedStatement(statement);
+        return statement;
+    }
+	//... 省略部分代码
+}
+----
+
+. 如果的指向的 Cache 未解析，抛出异常
+. 获得 `MappedStatement` 的唯一编号 id，格式为 `${namespace}.${id}`
+. 创建 `MappedStatement.Builder` 对象
+. 创建 `ParameterMap` 对象，进入 `getStatementParameterMap` 方法可以看到，`ParameterMap的Class<?> type` 属性设置为入参类型，String id 设置为 `statementId`
+`<parameterMap />` 标签已经被废弃，所以这里不会配置 `parameterMap` 属性
+. 通过 `MappedStatement.Builder` 构建一个 `MappedStatement` 对象，并添加到 Configuration 全局配置中
+
+=== 总结
+
+解析 `XML` 映射文件的过程中是在 `XMLMapperBuilder` 中进行的，会使用到 `MapperBuilderAssistant` 小助手用于创建 `ResultMapping`、`ResultMap` 和 `MappedStatement` 对象
+
+其中解析 `<select />`， `<update />`， `<delete />`， `<insert />` 标签的解析过程又在 `XMLStatementBuilder` 对象中进行
+
+最终所有的 MyBatis 配置、Mapper 接口和 XML 映射文件生成的相应对象都保存在了 Configuration 全局配置对象中，那么接下来我们来看看 SQL 语句在 MyBatis 中是如何初始化的
+
+[[mybatis-init-sql]]
+== SQL 初始化
+
+我们以下面一个为演示
+
+[source,xml]
+.UserMapper.xml
+----
+<select id="getUser" resultMap="userResultMap">
+    select * from saga_user
+    <where>
+        <if test="id != null">
+            id = #{param1}
+        </if>
+    </where>
+</select>
+----
+
+其对应的 Mapper 对象为
+
+[source,java]
+.UserMapper
+----
+public interface UserMapper extends BaseMapper<User> {
+
+    /**
+     * 获取用户.
+     * @return 用户对象
+     */
+    User getUser(Long id);
+
+}
+----
+
+然后，我们让应用程序启动之后，执行这个方法，我们来看看其内部发生了什么
+
+[source,java]
+.MybatisSQLParseApplication
+----
+@SpringBootApplication
+@MapperScan("com.mybatis.sql.**.mapper.**")
+public class MybatisSQLParseApplication {
+
+	public static void main(String[] args) {
+		SpringApplication.run(MybatisSQLParseApplication.class,args);
+	}
+
+	@Bean
+	public CommandLineRunner runner(UserMapper mapper) {
+		return args -> {
+			User user = mapper.getUser(1L);
+			System.out.println(user);
+		};
+	}
+}
+
+----
+
+在上一节中，我们提到了 Mybatis 如何解析 `<select />` `<insert />` `<update />` `<delete />` 节点中，会创建一个 `SqlSource` 对象，实现动态 SQL 语句。那我们来看看它是如何创建  `SqlSource` 对象的。让我们从下面这一段代码开始
+
+=== 获取 `SqlSource` 对象
+
+我们从 `XMLStatementBuilder.parseStatementNode()` 方法开始
+
+[source,java]
+.XMLStatementBuilder.parseStatementNode()
+----
+public class XMLStatementBuilder extends BaseBuilder {
+	//... 省略部分代码
+    public void parseStatementNode() {
+		//... 省略部分代码
+        // 创建对应的 SqlSource 对象，保存了该节点下 SQL 相关信息
+        SqlSource sqlSource = langDriver.createSqlSource(configuration, context, parameterTypeClass);
+		//... 省略部分代码
+    }
+	//... 省略部分代码
+}
+----
+
+[source,java]
+.XMLLanguageDriver
+----
+public class XMLLanguageDriver implements LanguageDriver {
+	//... 省略部分代码
+    @Override
+    public SqlSource createSqlSource(Configuration configuration, XNode script, Class<?> parameterType) {
+        XMLScriptBuilder builder = new XMLScriptBuilder(configuration, script, parameterType);
+        return builder.parseScriptNode();
+    }
+    //... 省略部分代码
+}
+
+----
+
+. `langDriver` 是从 Configuration 全局配置对象中获取的默认实现类，对应的也就是 `XMLLanguageDriver`，在 Configuration 初始化的时候设置的。
+. 创建 `XMLScriptBuilder` 对象，解析脚本，返回 `SqlSource` 对象。
+
+[source,java]
+.XMLScriptBuilder
+----
+public class XMLScriptBuilder extends BaseBuilder {
+    //... 省略部分代码
+	public SqlSource parseScriptNode() {
+		// 解析 XML 或者注解中定义的 SQL
+        MixedSqlNode rootSqlNode = parseDynamicTags(context);
+        SqlSource sqlSource;
+        if (isDynamic) {
+			// 解析 XML 或者注解中定义的 SQL
+            sqlSource = new DynamicSqlSource(configuration, rootSqlNode);
+        } else {
+            sqlSource = new RawSqlSource(configuration, rootSqlNode, parameterType);
+        }
+        return sqlSource;
+    //... 省略部分代码
+    }
+}
+
+----
+
+. 通过调用 `parseDynamicTags(XNode node)` 方法，将解析 SQL 成 `MixedSqlNode` 对象，主要是将一整个 SQL 解析成一系列的 `SqlNode` 对象
+. 如果是动态 SQL 语句，使用了 MyBatis 自定义的 XML 标签（`<if />` 等）或者使用了 `${}`，则封装成 `DynamicSqlSource` 对象
+. 否则就是静态 SQL 语句，封装成 `RawSqlSource` 对象，`RawSqlSource` 对象在构造时会通过 `getSql` 方法直接获取到他的 sql 语句，这里不做过多解析，您可以查看相关源码进行了解
+
+`parseDynamicTags(XNode node)` 方法将 SQL 脚本（XML 或者注解中定义的 SQL ）解析成 `MixedSqlNode` 对象，代码如下：
+
+[source,java]
+.XMLScriptBuilder
+----
+public class XMLScriptBuilder extends BaseBuilder {
+    //... 省略部分代码
+    private void initNodeHandlerMap() {
+        nodeHandlerMap.put("trim", new TrimHandler());
+        nodeHandlerMap.put("where", new WhereHandler());
+        nodeHandlerMap.put("set", new SetHandler());
+        nodeHandlerMap.put("foreach", new ForEachHandler());
+        nodeHandlerMap.put("if", new IfHandler());
+        nodeHandlerMap.put("choose", new ChooseHandler());
+        nodeHandlerMap.put("when", new IfHandler());
+        nodeHandlerMap.put("otherwise", new OtherwiseHandler());
+        nodeHandlerMap.put("bind", new BindHandler());
+    }
+
+    protected MixedSqlNode parseDynamicTags(XNode node) {
+		/*
+         * <1> 创建 SqlNode 数组
+         */
+        List<SqlNode> contents = new ArrayList<>();
+        /*
+         * <2> 遍历 SQL 节点中所有子节点
+         * 这里会对该节点内的所有内容进行处理然后返回 NodeList 对象
+         * 1. 文本内容会被解析成 '<#text></#text>' 节点，就算一个换行符也会解析成这个
+         * 2. <![CDATA[ content ]]> 会被解析成 '<#cdata-section>content</#cdata-section>' 节点
+         * 3. 其他动态<if /> <where />
+         */
+        NodeList children = node.getNode().getChildNodes();
+        for (int i = 0; i < children.getLength(); i++) {
+            /*
+             * 当前子节点
+             * i = 0 时：child 为
+             * <#text>
+             *      select * from saga_user
+             * 		</#text>
+             * i = 1 时：child 为
+             * <where>
+             *    <if test="id != null">
+             *				id = #{param1}
+             *	  </if>
+             * </where>
+             */
+            XNode child = node.newXNode(children.item(i));
+            // <2.1> 如果类型是 Node.CDATA_SECTION_NODE 或者 Node.TEXT_NODE 时
+            if (child.getNode().getNodeType() == Node.CDATA_SECTION_NODE // <![CDATA[ ]]>节点
+                    || child.getNode().getNodeType() == Node.TEXT_NODE) { // 纯文本
+                // <2.1.1> 获得内容
+                String data = child.getStringBody("");
+                // <2.1.2> 创建 TextSqlNode 对象
+                TextSqlNode textSqlNode = new TextSqlNode(data);
+				// <2.1.2.1> 如果是动态的 TextSqlNode 对象，也就是使用了 '${}'
+                if (textSqlNode.isDynamic()) {
+                    // 添加到 contents 中
+                    contents.add(textSqlNode);
+                    // 标记为动态 SQL
+                    isDynamic = true;
+                } else {
+					// <2.1.2.2> 如果是非动态的 TextSqlNode 对象，没有使用 '${}'
+                    // <2.1.2> 创建 StaticTextSqlNode 添加到 contents 中
+                    contents.add(new StaticTextSqlNode(data));
+                }
+            } else if (child.getNode().getNodeType() == Node.ELEMENT_NODE) {
+				// issue #628 <2.2> 如果类型是 Node.ELEMENT_NODE
+                // <2.2.1> 根据子节点的标签，获得对应的 NodeHandler 对象
+                String nodeName = child.getNode().getNodeName();
+				// nodeHandlerMap 在构造时已经进行了初始化并添加了默认 9 个，请看上一段代码
+                // 当为 where 子句时，此时的 handler 为 where -> WhereHandler
+                NodeHandler handler = nodeHandlerMap.get(nodeName);
+                if (handler == null) {
+					// 获得不到，说明是未知的标签，抛出 BuilderException 异常
+                    throw new BuilderException("Unknown element <" + nodeName + "> in SQL statement.");
+                }
+                // <2.2.2> 执行 NodeHandler 处理,
+                handler.handleNode(child, contents);
+                // <2.2.3> 标记为动态 SQL
+                isDynamic = true;
+            }
+        }
+        // <3> 创建 MixedSqlNode 对象 XMLScriptBuilder 对象
+        return new MixedSqlNode(contents);
+    }
+    //... 省略部分代码
+}
+
+----
+
+. 创建 SqlNode 数组 contents，用于保存解析 SQL 后的一些列 SqlNode 对象
+. 获取定义的 SQL 节点中所有子节点，返回一个 NodeList 对象，这个对象中包含了该 SQL 节点内的所有信息，然后逐个遍历子节点
+.. 如果子节点是 `<#text />` 或者 `<#cdata-section />` 类型
+... 获取子节点的文本内容
+... 创建 `TextSqlNode` 对象
+.... 调用 TextSqlNode 的 `isDynamic()` 方法，点击去该进去看看就知道了，如果文本中使用了 `${}`，则标记为动态 SQL 语句，将其添加至 contents 数组中
+.... 否则就是静态文本内容，创建对应的 `StaticTextSqlNode` 对象，将其添加至 contents 数组中
+.. 如果类型是 Node.ELEMENT_NODE 时，也就是 MyBatis 的自定义标签
+... 根据子节点的标签名称，获得对应的 NodeHandler 对象,
+... 执行 NodeHandler 的 `handleNode` 方法处理该节点，创建不同类型的 `SqlNode` 并添加到 contents 数组中，如何处理的在下面讲述
+... 标记为动态 SQL 语句
+. 最后将创建 contents 封装成 `MixedSqlNode` 对象
+
+在 `handler.handleNode(child, contents)` 处理节点时，我们这里不对每一个标签进行说明，其原理大致一样。我们这里仅以以下标签为例：
+
+[source,xml]
+----
+<where>
+    <if test="id != null">
+        id = #{param1}
+    </if>
+</where>
+----
+
+这时，handler 对应的类型应该为 `WhereHandler`，执行 `WhereHandler.handleNode(child, contents)` 方法，让我们继续追踪这一段代码。
+
+[source,java]
+.XMLScriptBuilder
+----
+public class XMLScriptBuilder extends BaseBuilder {
+    //... 省略部分代码
+    @Override
+    public void handleNode(XNode nodeToHandle, List<SqlNode> targetContents) {
+		// 继续执行 parseDynamicTags 方法。
+        MixedSqlNode mixedSqlNode = parseDynamicTags(nodeToHandle);
+        WhereSqlNode where = new WhereSqlNode(configuration, mixedSqlNode);
+        targetContents.add(where);
+    }
+    //... 省略部分代码
+}
+
+----
+
+继续执行 `parseDynamicTags` 方法，`where` 的子标签为 `if`，所以此时的 handler 为 `IfHandler`。 执行 `IfHandler.handleNode(child, contents)` 方法。
+
+[source,java]
+.XMLScriptBuilder
+----
+public class XMLScriptBuilder extends BaseBuilder {
+    //... 省略部分代码
+    @Override
+    public void handleNode(XNode nodeToHandle, List<SqlNode> targetContents) {
+		// 获取到的 MixedSqlNode 包含一个 content 内容为 `id = #{param1}`
+        MixedSqlNode mixedSqlNode = parseDynamicTags(nodeToHandle);
+		// 获取到的 test 内容为 `id != null`
+        String test = nodeToHandle.getStringAttribute("test");
+        IfSqlNode ifSqlNode = new IfSqlNode(mixedSqlNode, test);
+        targetContents.add(ifSqlNode);
+    }
+    //... 省略部分代码
+}
+
+----
+
+又重复执行 `parseDynamicTags` 方法，由于 if 下面已经没有子标签了，所有不会再进入 `parseDynamicTags` 方法了，方法一步步返回，让我们再回头看 `parseScriptNode` 方法的最终返回值 `rootSqlNode` 的结构：
+
+[source,text]
+----
+MixedSqlNode(rootSqlNode)
+    contents(3个节点)
+        StaticTextSqlNode
+            content: select * from saga_user
+        WhereSqlNode
+            contents(3 个节点)
+                StaticTextSqlNode：
+                IfSqlNode
+                    test: id != null
+                    content(1 个节点)
+                        MixedSqlNode
+                            contents(1 个节点)
+                                StaticTextSqlNode
+                                    content: id = #{param1}
+                StaticTextSqlNode：
+        StaticTextSqlNode：
+----
+
+然后根据 `isDynamic` 创建 `SqlSource` 对象。然后将 `SqlSource` 对象添加到 `MappedStatement` 中， 至此，SqlSource 对象创建完成。
+
+== 总结
+
+在 Mybatis 中，实现动态 SQL 的原理如下：
+
+. 通过 Xml 文件配置 Mapper 对应的 SQL 语句，这些 SQL 语句中可以包含动态 SQL 语句。
+. Mybatis 会在运行时将 Xml 文件中的 SQL 语句解析成 `SqlNode` 的树形结构，该结构中的每个 `SqlNode` 对象表示 Xml 文件中的一个节点，每个 `SqlNode` 都会实现 `SqlNode` 接口。
+. 动态 SQL 语句的生成是通过 `SqlNode` 接口的实现类的实现完成的，具体生成逻辑定义在 `SqlNode` 的实现类中。
+. 当 Mybatis 执行 Mapper 中的方法时，会使用 `SqlSource` 类的 `getBoundSql` 方法生成最终的动态 SQL 语句，该方法会对 `SqlNode` 的树形结构进行遍历， 并利用 `XMLScriptBuilder.NodeHandler` 的多个实现类动态生成最终的 SQL 语句。关于 SQL 执行的细节，请查看 <<mybatis-init-excute>>
+
+因此，动态 SQL 的生成是通过对 `SqlNode` 接口的实现类的利用和遍历实现的，Mybatis 在运行时通过组合 `SqlNode` 和通过遍历 `SqlNode` 生成的结果来生成最终的动态 SQL 语句。
+
+[[mybatis-init-excute]]
+== SQL 解析
+
+在前面，我们已经完成了 xml 文件的全部解析过程，相应的 `SqlSessionFactory` `ResultMapping`、`ResultMap` 和 `MappedStatement` 对象也已经准备就绪，其中 `MappedStatement` 中又包含了 `SqlSource` 对象，那么当 Mybatis 执行 Mapper 中的方法时是如何组装这些对象的？
+
+Mapper 接口是通过 MyBatis 框架内置的自动代理机制来实例化的。
+
+具体来说，MyBatis 在启动时会扫描所有的 Mapper 接口，并使用 JDK 动态代理为这些 Mapper 接口生成代理实现类。这些代理实现类实现了 Mapper 接口中定义的所有方法，并通过 MyBatis 框架中的 SqlSession 来执行对数据库的 CRUD 操作。 mybatis 根据我们的 sql 类型和返回值，判断如何组装和执行我们的 SQL，执行 以我们本示例为例，方法的最终会进入到 `DefaultSqlSession` 的 `selectOne` 方法。`DefaultSqlSession` 是 `SqlSession` 的默认实现。让我们以此为切入点
+
+[source,java]
+.DefaultSqlSession
+----
+public class DefaultSqlSession implements SqlSession {
+    //... 省略部分代码
+    @Override
+    public <T> T selectOne(String statement, Object parameter) {
+        // Popular vote was to return null on 0 results and throw exception on too many.
+        List<T> list = this.selectList(statement, parameter);
+        if (list.size() == 1) {
+            return list.get(0);
+        } else if (list.size() > 1) {
+            throw new TooManyResultsException("Expected one result (or null) to be returned by selectOne(), but found: " + list.size());
+        } else {
+        return null;
+        }
+    }
+    //... 省略部分代码
+}
+----
+
+再往下走，最终会执行到下面的位置
+
+[source,java]
+.DefaultSqlSession
+----
+public class DefaultSqlSession implements SqlSession {
+    //... 省略部分代码
+    private <E> List<E> selectList(String statement, Object parameter, RowBounds rowBounds, ResultHandler handler) {
+        try {
+			// 从 configuration 中获取 MappedStatement 对象
+            MappedStatement ms = configuration.getMappedStatement(statement);
+			// 执行
+            return executor.query(ms, wrapCollection(parameter), rowBounds, handler);
+        } catch (Exception e) {
+            throw ExceptionFactory.wrapException("Error querying database.  Cause: " + e, e);
+        } finally {
+            ErrorContext.instance().reset();
+        }
+    }
+    //... 省略部分代码
+}
+----
+
+从 configuration 中获取 `MappedStatement` 对象 ，然后开始执行。在执行过程中，首先使用 `MappedStatement` 对象的 `getBoundSql` 获取到 `BoundSql` 对象。
+
+[source,java]
+.MappedStatement
+----
+public final class MappedStatement {
+    //... 省略部分代码
+    public BoundSql getBoundSql(Object parameterObject) {
+		// 从 SqlSource 中获取 bound 对象
+        BoundSql boundSql = sqlSource.getBoundSql(parameterObject);
+		// 参数映射集合
+        List<ParameterMapping> parameterMappings = boundSql.getParameterMappings();
+        if (parameterMappings == null || parameterMappings.isEmpty()) {
+            boundSql = new BoundSql(configuration, boundSql.getSql(), parameterMap.getParameterMappings(), parameterObject);
+        }
+
+        // check for nested result maps in parameter mappings (issue #30)
+        // 获取 ResultMapping id
+        for (ParameterMapping pm : boundSql.getParameterMappings()) {
+            String rmId = pm.getResultMapId();
+            if (rmId != null) {
+                ResultMap rm = configuration.getResultMap(rmId);
+                if (rm != null) {
+                  hasNestedResultMaps |= rm.hasNestedResultMaps();
+                }
+            }
+        }
+        return boundSql;
+    }
+    //... 省略部分代码
+}
+----
+
+. 从 `SqlSource` 中获取 `BoundSql` 对象，其中包含可执行的 SQL 语句与参数信息
+
+=== 获取 `BoundSql` 对象
+
+由于我们这里的是 `SqlSource` 类型为 `DynamicSqlSource`。我们就以此为例，我们就接着往下走
+
+[source,java]
+.DynamicSqlSource
+----
+public class DynamicSqlSource implements SqlSource {
+    //... 省略部分代码
+    @Override
+    public BoundSql getBoundSql(Object parameterObject) {
+		// 构建 `DynamicContext` 对象
+        DynamicContext context = new DynamicContext(configuration, parameterObject);
+		// 这里其实是使用了访问者模式，不同 SqlNode 具有不同的访问实现。并将结果追加到 context 的 sqlBuilder 属性中
+        // 在本例中，sqlBuilder 的结果值为 select * from saga_user WHERE id = #{param1} ，忽略空格和换行
+        rootSqlNode.apply(context);
+		// 构建 SqlSourceBuilder 对象。
+        SqlSourceBuilder sqlSourceParser = new SqlSourceBuilder(configuration);
+		// 获取参数类型
+        Class<?> parameterType = parameterObject == null ? Object.class : parameterObject.getClass();
+		// 这里进行 Sql 转换，将 #{param1} 转换为 ? 占位符。
+        SqlSource sqlSource = sqlSourceParser.parse(context.getSql(), parameterType, context.getBindings());
+        BoundSql boundSql = sqlSource.getBoundSql(parameterObject);
+		// 添加附加参数到 BoundSql 对象中，因为上一步创建的`BoundSql`对象时候传入的仅是入参信息，没有添加附加参数
+        context.getBindings().forEach(boundSql::setAdditionalParameter);
+        return boundSql;
+    }
+    //... 省略部分代码
+}
+----
+
+[source,java]
+----
+public class DynamicContext {
+    public DynamicContext(Configuration configuration, Object parameterObject) {
+        if (parameterObject != null && !(parameterObject instanceof Map)) {
+            MetaObject metaObject = configuration.newMetaObject(parameterObject);
+            boolean existsTypeHandler = configuration.getTypeHandlerRegistry().hasTypeHandler(parameterObject.getClass());
+            bindings = new ContextMap(metaObject, existsTypeHandler);
+        } else {
+            bindings = new ContextMap(null, false);
+        }
+        bindings.put(PARAMETER_OBJECT_KEY, parameterObject);
+        bindings.put(DATABASE_ID_KEY, configuration.getDatabaseId());
+    }
+}
+
+----
+
+. 构建 `DynamicContext` 对象。
+. 循环访问所有的 `SqlNode` 节点，这里不同的 `SqlNode` 节点具有不同的访问操作，还记得我们之前生成的 `rootSqlNode` 结构吗？我们来回顾一下：
+
+[source,text]
+----
+MixedSqlNode(rootSqlNode)
+    contents(3个节点)
+        StaticTextSqlNode
+            content: select * from saga_user
+        WhereSqlNode
+            contents(3 个节点)
+                StaticTextSqlNode：
+                IfSqlNode
+                    test: id != null
+                    content(1 个节点)
+                        MixedSqlNode
+                            contents(1 个节点)
+                                StaticTextSqlNode
+                                    content: id = #{param1}
+                StaticTextSqlNode：
+        StaticTextSqlNode：
+----
+
+我们来看看这些 `SqlNode` 都有哪些行为
+
+[source,java]
+.MixedSqlNode
+----
+public class MixedSqlNode implements SqlNode {
+    private final List<SqlNode> contents;
+
+    public MixedSqlNode(List<SqlNode> contents) {
+        this.contents = contents;
+    }
+
+    @Override
+    public boolean apply(DynamicContext context) {
+		// 循环遍历访问 SqlNode
+        contents.forEach(node -> node.apply(context));
+        return true;
+    }
+}
+----
+
+[source,java]
+.IfSqlNode
+----
+public class IfSqlNode implements SqlNode {
+	//... 省略部分代码
+    @Override
+    public boolean apply(DynamicContext context) {
+		// 通过 OgnlCache 根据 Ognl 表达式从上下文的 ContextMap 中获取转换后的结果。也既判断是否应用 <if /> 标签内的 SqlNode 节点们
+        if (evaluator.evaluateBoolean(test, context.getBindings())) {
+			// <2> 解析该<if />节点中的内容
+            contents.apply(context);
+            return true;
+        }
+		// <3> 不符合
+        return false;
+    }
+    //... 省略部分代码
+}
+----
+
+[source,java]
+.ChooseSqlNode
+----
+public class ChooseSqlNode implements SqlNode {
+	//... 省略部分代码
+    @Override
+    public boolean apply(DynamicContext context) {
+		// <1> 先判断 <when /> 标签中，是否有符合条件的节点。
+        // 如果有，则进行应用。并且只因应用一个 SqlNode 对象
+        for (SqlNode sqlNode : ifSqlNodes) {
+            if (sqlNode.apply(context)) {
+                return true;
+            }
+        }
+		// <2> 再判断  <otherwise /> 标签，是否存在
+        // 如果存在，则进行应用
+        if (defaultSqlNode != null) {
+            defaultSqlNode.apply(context);
+            return true;
+        }
+        return false;
+    }
+    //... 省略部分代码
+}
+----
+
+[source,java]
+.ForEachSqlNode
+----
+public class ForEachSqlNode implements SqlNode {
+	//... 省略部分代码
+  @Override
+  public boolean apply(DynamicContext context) {
+    Map<String, Object> bindings = context.getBindings();
+	// 获得表达式对应的集合,无论 expression 对应的实际类型是数组还是 map，最后都会给处理成集合的形式
+    final Iterable<?> iterable = evaluator.evaluateIterable(collectionExpression, bindings, Optional.ofNullable(nullable).orElseGet(configuration::isNullableOnForEach));
+	// 如果为空集合，则直接返回 true
+    if (iterable == null || !iterable.iterator().hasNext()) {
+        return true;
+    }
+	// 是否为集合的第一个元素的标志位
+    boolean first = true;
+	// 拼接"("
+    applyOpen(context);
+    // 遍历的索引
+    int i = 0;
+     for (Object o : iterable) {
+        DynamicContext oldContext = context;
+		// 如果是第一个元素，则不需要对其添加分隔符
+        if (first || separator == null) {
+            context = new PrefixedContext(context, "");
+        } else {
+			// 其余元素都需要添加分隔符
+            context = new PrefixedContext(context, separator);
+        }
+		// 因为集合中的每一个元素都会有一个唯一对应的 PrefixedContext 对象，所以这个 number 可以认为在当前集合中是唯一的
+        int uniqueNumber = context.getUniqueNumber();
+        // Issue #709
+        // 转换在上下文中的占位符
+        if (o instanceof Map.Entry) {
+            @SuppressWarnings("unchecked")
+            Map.Entry<Object, Object> mapEntry = (Map.Entry<Object, Object>) o;
+			// 处理索引与实参之间的关系
+            applyIndex(context, mapEntry.getKey(), uniqueNumber);
+			// 处理 item 与实参之间的关系
+            applyItem(context, mapEntry.getValue(), uniqueNumber);
+        } else {
+            applyIndex(context, i, uniqueNumber);
+            applyItem(context, o, uniqueNumber);
+        }
+		// 处理子 SqlNode 节点
+        contents.apply(new FilteredDynamicContext(configuration, context, index, item, uniqueNumber));
+        if (first) {
+            first = !((PrefixedContext) context).isPrefixApplied();
+        }
+        context = oldContext;
+        i++;
+	}
+    // 追加")"
+    applyClose(context);
+    context.getBindings().remove(item);
+    context.getBindings().remove(index);
+    return true;
+  }
+    //... 省略部分代码
+}
+----
+
+[source,java]
+.SetSqlNode
+----
+public class SetSqlNode extends TrimSqlNode {
+
+    private static final List<String> COMMA = Collections.singletonList(",");
+
+    public SetSqlNode(Configuration configuration,SqlNode contents) {
+        super(configuration, contents, "SET", COMMA, null, COMMA);
+    }
+}
+----
+
+[source,java]
+.WhereSqlNode
+----
+public class WhereSqlNode extends TrimSqlNode {
+
+    private static List<String> prefixList = Arrays.asList("AND ","OR ","AND\n", "OR\n", "AND\r", "OR\r", "AND\t", "OR\t");
+
+    public WhereSqlNode(Configuration configuration, SqlNode contents) {
+        super(configuration, contents, "WHERE", prefixList, null, null);
+    }
+}
+----
+
+`SetSqlNode` 和 `WhereSqlNode` 都继承自 `TrimSqlNode`，处理原理相同，但也有一点不同，我们在 `TrimSqlNode` 中进行说明
+
+[source,java]
+.TrimSqlNode
+----
+public class TrimSqlNode implements SqlNode {
+    //... 省略部分代码
+    @Override
+    public boolean apply(DynamicContext context) {
+        // FilteredDynamicContext 类的作用是维护所有的动态 SQL 片段，并在构建最终的动态 SQL 时对其进行过滤和处理，以生成最终的有效 SQL 语句。
+        // 它的主要目的是为了避免静态 SQL 片段和动态 SQL 片段的冲突，以确保生成的 SQL 语句是正确的。
+        FilteredDynamicContext filteredDynamicContext = new FilteredDynamicContext(context);
+        boolean result = contents.apply(filteredDynamicContext);
+        filteredDynamicContext.applyAll();
+        return result;
+    }
+    public void applyAll() {
+		// 去掉前后面的空格
+        sqlBuffer = new StringBuilder(sqlBuffer.toString().trim());
+		// 转换为大写
+        String trimmedUppercaseSql = sqlBuffer.toString().toUpperCase(Locale.ENGLISH);
+        if (trimmedUppercaseSql.length() > 0) {
+            // 如果 prefix 不为空，则添加前缀。比如如果为 WhereSqlNode，其前缀 WHERE 在其构造函数中指定。
+            // WHERE id = #{param1}
+            applyPrefix(sqlBuffer, trimmedUppercaseSql);
+			// 如果 suffix 不为空，则添加后缀。
+            applySuffix(sqlBuffer, trimmedUppercaseSql);
+        }
+        delegate.appendSql(sqlBuffer.toString());
+    }
+    //... 省略部分代码
+}
+----
+
+[source,java]
+.StaticTextSqlNode
+----
+public class StaticTextSqlNode implements SqlNode {
+	//... 省略部分代码
+    @Override
+    public boolean apply(DynamicContext context) {
+		// 直接追加文本值
+        context.appendSql(text);
+        return true;
+    }
+    //... 省略部分代码
+}
+----
+
+[source,java]
+.TextSqlNode
+----
+public class ChooseSqlNode implements SqlNode {
+	//... 省略部分代码
+    @Override
+    public boolean apply(DynamicContext context) {
+        // <1> 创建 BindingTokenParser 对象
+        // <2> 创建 GenericTokenParser 对象
+        GenericTokenParser parser = createParser(new BindingTokenParser(context, injectionFilter));
+        // <3> 执行解析
+        // <4> 将解析的结果，添加到 context 中
+        context.appendSql(parser.parse(text));
+        return true;
+    }
+
+    private GenericTokenParser createParser(TokenHandler handler) {
+        return new GenericTokenParser("${", "}", handler);
+    }
+    //... 省略部分代码
+}
+----
+
+在 XML 文件中编写 SQL 语句时，如果使用到了 `${}` 作为变量时，那么会生成 `TextSqlNode` 对象。
+
+NOTE: 在 MyBatis 处理 SQL 语句时就会将 `${}` 进行替换成对应的参数，存在 SQL 注入的安全性问题。 而 `#{}` 就不一样了，MyBatis 会将其替换成 `?` 占位符，通过 `java.sql.PreparedStatement` 进行预编译处理，不存在上面的问题
+
+[source,java]
+.VarDeclSqlNode
+----
+public class VarDeclSqlNode implements SqlNode {
+	//... 省略部分代码
+    @Override
+    public boolean apply(DynamicContext context) {
+        // 变量个表达式进行绑定
+        final Object value = OgnlCache.getValue(expression, context.getBindings());
+        context.bind(name, value);
+        return true;
+    }
+    //... 省略部分代码
+}
+----
+
+当遍历完 `SqlNode` 对象后，然后通过构建 `SqlSourceBuilder` 对象来进行占位符处理。
+
+[source,java]
+.SqlSourceBuilder
+----
+public class SqlSourceBuilder extends BaseBuilder {
+    public SqlSource parse(String originalSql, Class<?> parameterType, Map<String, Object> additionalParameters) {
+		// originalSql = select * from saga_user WHERE id = #{param1}
+        // 构建 ParameterMappingTokenHandler 对象，用于解析 #{} 的内容，创建 ParameterMapping 对象，并将其替换成?占位符
+        ParameterMappingTokenHandler handler = new ParameterMappingTokenHandler(configuration, parameterType, additionalParameters);
+		// 构建 GenericTokenParser 对象，进行占位符转换
+        GenericTokenParser parser = new GenericTokenParser("#{", "}", handler);
+        String sql;
+        if (configuration.isShrinkWhitespacesInSql()) {
+            sql = parser.parse(removeExtraWhitespaces(originalSql));
+        } else {
+			// 转换后的结果 sql = select * from saga_user WHERE id = ?
+            sql = parser.parse(originalSql);
+        }
+		// 构建 StaticSqlSource 对象，转化为静态 SQL
+        return new StaticSqlSource(configuration, sql, handler.getParameterMappings());
+    }
+}
+
+----
+
+至此，`BoundSql` 对象构建完成。这里简单总结下 `BoundSql` 的构建过程：
+
+. 创建本次解析的动态 SQL 语句的上下文，设置入参信息
+. 根据上下文应用整个 `SqlNode`，内部包含的所有 `SqlNode` 都会被应用，最终解析后的 SQL 会保存上下文中
+. 创建 `SqlSourceBuilder` 构建对象 sqlSourceParser
+. 调用 sqlSourceParser 的 `parse` 方法对第2步解析后的SQL语句进行转换，`#{}` 全部替换成 `?` 占位符，并创建对应的 `ParameterMapping` 对象
+. 通过第 4 步返回的 `StaticSqlSource` 对象创建 `BoundSql` 对象
+. 添加附加参数到 `BoundSql` 对象中，因为上一步创建的 `BoundSql` 对象时候传入的仅是入参信息，没有添加附加参数（通过 `<bind />` 标签生成的，或者 `<foreach />` 标签中的集合的元素）
+
+Mybatis 的 `ParameterHandler` 接口有两个实现 `MybatisParameterHandler` 和 `DefaultParameterHandler`，其作用都是根据 `BoundSql` 对象将入参设置到 `java.sql.PreparedStatement` 预编译对象中，然后执行 SQL 查询，封装结果，这一块就不具体演示了。
+
+=== 总结
+
+在 MyBatis 初始化的过程中，会将 XML 映射文件中的 `<select />` `<insert />` `<update />` `<delete />` 节点解析成 `MappedStatement` 对象，其中会将节点中定义的 SQL 语句通过 `XMLLanguageDriver` 语言驱动类创建一个 `SqlSource` 对象，
+
+通过 `SqlSource` 这个对象根据入参可以获取到对应的 `BoundSql` 对象，`BoundSql` 对象中包含了数据库需要执行的 SQL 语句、`ParameterMapping` 参数信息、入参对象和附加的参数（通过 `<bind />` 标签生成的，或者 `<foreach />` 标签中的集合的元素等等）
+
